@@ -1,0 +1,6 @@
+streamlit>=1.32,<2
+pandas>=2.0
+numpy>=1.25
+altair>=5
+gspread>=6
+oauth2client>=4
