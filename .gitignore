@@ -1,0 +1,13 @@
+# venv / caches
+.venv/
+__pycache__/
+*.pyc
+
+# streamlit
+.streamlit/secrets.toml
+
+# credenciais
+*.json
+
+# outros
+.DS_Store
