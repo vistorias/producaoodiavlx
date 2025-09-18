@@ -26,19 +26,16 @@ st.set_page_config(page_title="🧰 Produção por Vistoriador - VELOX VISTORIAS
 st.title("🧰 Painel de Produção por Vistoriador - VELOX VISTORIAS")
 
 # === Planilha-Índice (ARQUIVOS) ===
-# Lê o ID da planilha-índice pelos secrets (obrigatório no Cloud).
 INDEX_SHEET_ID = (st.secrets.get("velox_index_sheet_id", "") or "").strip()
 INDEX_TAB_NAME = "ARQUIVOS"
-
 if not INDEX_SHEET_ID:
     st.error("Defina no **secrets.toml** a chave **velox_index_sheet_id** com o ID da planilha-índice da VELOX VISTORIAS.")
     st.stop()
 
-# --- estilos ---
+# --- estilos (sem o .hero) ---
 st.markdown("""
 <style>
   .notranslate { unicode-bidi: plaintext; }
-  .hero { background-color:#f0f2f6; padding:15px; border-radius:12px; margin-bottom:18px; box-shadow:0 1px 3px rgba(0,0,0,.10); }
   .card-container { display:flex; gap:18px; margin:12px 0 22px; flex-wrap:wrap; }
   .card { background:#f5f5f5; padding:18px 20px; border-radius:12px; box-shadow:0 2px 6px rgba(0,0,0,.10); text-align:center; min-width:200px; flex:1; }
   .card h4 { color:#cc3300; margin:0 0 8px; font-size:16px; font-weight:700; }
@@ -50,18 +47,6 @@ st.markdown("""
 
 def _nt(txt: str) -> str:
     return f"<span class='notranslate' translate='no'>{txt}</span>"
-
-st.markdown("""
-<div class="hero">
-  <h4 style="color:#cc3300; margin:0;">📌 Regras do Painel</h4>
-  <ul style="margin:6px 0 0 18px;">
-    <li><b>Vistoriador</b> = Perito (se vazio, usa Digitador).</li>
-    <li><b>Revistoria</b> = 2ª ocorrência em diante do mesmo <b>CHASSI</b> (ordenado pela Data).</li>
-    <li><b>Líquido</b> = Vistorias − Revistorias.</li>
-    <li>Preço é ignorado.</li>
-  </ul>
-</div>
-""", unsafe_allow_html=True)
 
 # =========================
 # Conexão Google Sheets
@@ -102,16 +87,12 @@ def make_client():
 
 # ---- util: pegar ID de URL/ID
 ID_RE = re.compile(r'/d/([a-zA-Z0-9-_]+)')
-
 def extract_sheet_id(s: str) -> Optional[str]:
     s = (s or "").strip()
-    if not s:
-        return None
+    if not s: return None
     m = ID_RE.search(s)
-    if m:
-        return m.group(1)
-    if re.fullmatch(r'[a-zA-Z0-9-_]{20,}', s):
-        return s
+    if m: return m.group(1)
+    if re.fullmatch(r'[a-zA-Z0-9-_]{20,}', s): return s
     return None
 
 # ---- helpers diversos
@@ -239,11 +220,8 @@ def load_ids_from_index(gs_client) -> List[str]:
         rows = ws.get_all_records()
         if not rows:
             return []
-        # normaliza cabeçalhos
         norm = [{str(k).strip().upper(): r[k] for k in r} for r in rows]
-        # apenas ATIVOS
         ativos = [r for r in norm if _yes(r.get("ATIVO", "S"))]
-        # extrai IDs/URLs
         ids = []
         for r in ativos:
             sid = extract_sheet_id(str(r.get("URL","")))
@@ -451,7 +429,7 @@ grp["TIPO_NORM"] = grp.get("TIPO","").astype(str).str.upper().str.replace("MOVEL
 grp.loc[grp["TIPO_NORM"]=="", "TIPO_NORM"] = "—"
 
 tipo_options = [t for t in ["FIXO","MÓVEL"] if t in grp["TIPO_NORM"].unique().tolist()]
-if "—" in grp["TIPO_NORM"].unique():  # caso existam metas sem tipo
+if "—" in grp["TIPO_NORM"].unique():
     tipo_options.append("—")
 
 sel_tipos = st.multiselect(
