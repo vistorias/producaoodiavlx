@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 # ------------------------------------------------------------
 # Painel de Produção por Vistoriador (Streamlit) - MULTI-MESES (VELOX VISTORIAS)
-# - Lê automaticamente os arquivos listados na planilha-índice
-#   (ÍNDICE_MESES → aba ARQUIVOS: colunas URL, MÊS, ATIVO)
+# - Lê automaticamente os arquivos listados na planilha-índice (secrets.velox_index_sheet_id)
 # - Junta dados de todos os meses e lê METAS por mês
-# - KPIs, Resumo, Gráficos, Auditoria, Rankings Mensal e do Dia
+# - KPIs, Resumo (com filtro FIXO/MÓVEL só aqui), Gráficos, Auditoria,
+#   Rankings Mensal e do Dia
 # ------------------------------------------------------------
 
 import os, re, json
@@ -34,7 +34,7 @@ if not INDEX_SHEET_ID:
     st.error("Defina no **secrets.toml** a chave **velox_index_sheet_id** com o ID da planilha-índice da VELOX VISTORIAS.")
     st.stop()
 
-# --- proteção contra auto-tradução do navegador ---
+# --- estilos ---
 st.markdown("""
 <style>
   .notranslate { unicode-bidi: plaintext; }
@@ -171,6 +171,7 @@ def read_one_sheet(gs_client, sheet_id: str) -> Tuple[pd.DataFrame, pd.DataFrame
         data[col_chas] = data[col_chas].map(_upper_strip)
         data["__DATA__"] = data[col_data].apply(parse_date_any)
 
+        # VISTORIADOR
         if col_per and col_dig:
             data["VISTORIADOR"] = np.where(
                 data[col_per].astype(str).str.strip() != "",
@@ -182,13 +183,16 @@ def read_one_sheet(gs_client, sheet_id: str) -> Tuple[pd.DataFrame, pd.DataFrame
         else:
             data["VISTORIADOR"] = data[col_dig].map(_upper_strip)
 
+        # revistoria
         data = data.sort_values(["__DATA__", col_chas], kind="mergesort").reset_index(drop=True)
         data["__ORD__"] = data.groupby(col_chas).cumcount()
         data["IS_REV"] = (data["__ORD__"] >= 1).astype(int)
 
+        # limpa unidades inválidas
         BAN_UNIDS = {"POSTO CÓDIGO", "POSTO CODIGO", "CÓDIGO", "CODIGO", "", "—", "NAN"}
         data = data[~data[col_unid].isin(BAN_UNIDS)].copy()
 
+    # METAS (opcional)
     try:
         metas_ws = sh.worksheet("METAS")
         dfm = pd.DataFrame(metas_ws.get_all_records())
@@ -223,105 +227,49 @@ def read_one_sheet(gs_client, sheet_id: str) -> Tuple[pd.DataFrame, pd.DataFrame
     return data, dfm, title
 
 # =========================
-# Leitura da PLANILHA-ÍNDICE
+# Leitura SILENCIOSA da PLANILHA-ÍNDICE
 # =========================
 def _yes(v) -> bool:
     return str(v).strip().upper() in {"S", "SIM", "TRUE", "T", "1", "Y", "YES"}
 
-def load_ids_from_index(gs_client):
-    """Lê a planilha-índice e retorna uma lista de sheet_ids ativos."""
+def load_ids_from_index(gs_client) -> List[str]:
     try:
         sh = gs_client.open_by_key(INDEX_SHEET_ID)
         ws = sh.worksheet(INDEX_TAB_NAME)
         rows = ws.get_all_records()
         if not rows:
-            st.warning("A planilha-índice está vazia.")
             return []
-
-        norm = []
-        for r in rows:
-            d = {str(k).strip().upper(): r[k] for k in r}
-            norm.append(d)
-
+        # normaliza cabeçalhos
+        norm = [{str(k).strip().upper(): r[k] for k in r} for r in rows]
+        # apenas ATIVOS
         ativos = [r for r in norm if _yes(r.get("ATIVO", "S"))]
-
-        meses = sorted({str(r.get("MÊS","")).strip() for r in ativos if str(r.get("MÊS","")).strip()})
-        if meses:
-            sel = st.multiselect("Meses no índice (opcional)", meses, default=meses)
-            if sel:
-                ativos = [r for r in ativos if str(r.get("MÊS","")).strip() in sel]
-
+        # extrai IDs/URLs
         ids = []
         for r in ativos:
             sid = extract_sheet_id(str(r.get("URL","")))
-            if sid:
-                ids.append(sid)
-
-        if not ids:
-            st.warning("Nenhum arquivo ativo/selecionado no índice.")
-        else:
-            st.success(f"Índice carregado: {len(ids)} arquivo(s) selecionado(s).")
+            if sid: ids.append(sid)
         return ids
-    except Exception as e:
-        st.error("Não consegui ler a planilha-índice (ÍNDICE_MESES). Verifique compartilhamento e ID.")
-        with st.expander("Detalhes do erro (índice)"):
-            st.exception(e)
+    except Exception:
         return []
 
 # =========================
-# Entrada – múltiplas planilhas
+# Entrada – múltiplas planilhas (sempre via índice)
 # =========================
-st.markdown("### Conexão com a Base — Arquivos (meses)")
-
-modo = st.radio(
-    "Como quer apontar os arquivos?",
-    ("Planilha-Índice (recomendado)", "Colar links manualmente"),
-    horizontal=True,
-)
-
 client = make_client()
-
-sheet_ids: List[str] = []
-
-if modo == "Planilha-Índice (recomendado)":
-    st.caption("Usando ÍNDICE_MESES → aba ARQUIVOS (URL, MÊS, ATIVO).")
-    sheet_ids = load_ids_from_index(client)
-else:
-    st.info("Cole uma **URL ou ID por linha** (ex.: 08/2025 e 09/2025). O app vai juntar tudo.")
-    urls = st.text_area("Planilhas (uma por linha):", height=90, value="")
-    if urls.strip():
-        sheet_ids = [extract_sheet_id(s) for s in urls.splitlines() if s.strip()]
-        sheet_ids = [sid for sid in sheet_ids if sid]
-    else:
-        st.stop()
+sheet_ids: List[str] = load_ids_from_index(client)
 
 if not sheet_ids:
-    st.error("Nenhum arquivo selecionado/encontrado.")
-    st.info(f"Se necessário, compartilhe as planilhas com: **{SERVICE_EMAIL}** (Leitor/Editor).")
+    st.error("Não encontrei dados ativos no índice. Verifique o compartilhamento/ATIVO na planilha-índice.")
     st.stop()
 
-# carrega todas
-all_df = []
-all_metas = []
-loaded = []
-errors = []
-
+all_df, all_metas = [], []
 for sid in sheet_ids:
     try:
-        dfi, dmf, ttl = read_one_sheet(client, sid)
-        loaded.append(f"✅ {ttl}")
+        dfi, dmf, _ = read_one_sheet(client, sid)
         if not dfi.empty: all_df.append(dfi)
         if not dmf.empty: all_metas.append(dmf)
-    except Exception as e:
-        errors.append((sid, e))
-
-if loaded:
-    st.success("Conectado com sucesso em:\n- " + "\n- ".join(loaded))
-if errors:
-    with st.expander("Falhas ao abrir (detalhes)"):
-        for sid, e in errors:
-            st.write(f"ID: {sid}")
-            st.exception(e)
+    except Exception:
+        pass
 
 if len(all_df) == 0:
     st.error("Não consegui montar dados de nenhuma planilha.")
@@ -331,7 +279,7 @@ df = pd.concat(all_df, ignore_index=True)
 df_metas_all = pd.concat(all_metas, ignore_index=True) if len(all_metas) else pd.DataFrame()
 
 # =========================
-# Continuação (igual ao modelo)
+# Continuação
 # =========================
 orig_cols = [c for c in df.columns]
 col_unid  = "UNIDADE" if "UNIDADE" in orig_cols else None
@@ -351,15 +299,12 @@ vist_opts = sorted([v for v in df["VISTORIADOR"].dropna().unique() if v])
 def cb_sel_all_vists():
     st.session_state.vists_tmp = vist_opts[:]
     st.rerun()
-
 def cb_clear_vists():
     st.session_state.vists_tmp = []
     st.rerun()
-
 def cb_sel_all_unids():
     st.session_state.unids_tmp = unidades_opts[:]
     st.rerun()
-
 def cb_clear_unids():
     st.session_state.unids_tmp = []
     st.rerun()
@@ -401,7 +346,7 @@ with colV2:
     b4.button("Limpar", use_container_width=True, on_click=cb_clear_vists)
 
 # =========================
-# Aplicar filtros
+# Aplicar filtros globais
 # =========================
 view = df.copy()
 if st.session_state.unids_tmp:
@@ -428,10 +373,10 @@ cards = [
     (_nt("Revistorias"),    f"{revistorias_total:,}".replace(",", ".")),
     (_nt("% Revistorias"),  f"{pct_rev:,.1f}%".replace(",", "X").replace(".", ",").replace("X", ".")),
 ]
-st.markdown('<div class="card-container">' + "".join([f"<div class='card'><h4>{t}</h4><h2>{v}</h2></div>" for t, v in cards]) + "</div>", unsafe_allow_html=True)
+st.markdown('<div class="card-container">' + "".join([f"<div class=\'card\'><h4>{t}</h4><h2>{v}</h2></div>" for t, v in cards]) + "</div>", unsafe_allow_html=True)
 
 # =========================
-# Resumo por Vistoriador
+# Resumo por Vistoriador  (AGORA COM FILTRO FIXO/MÓVEL APENAS AQUI)
 # =========================
 st.markdown("<div class='section-title'>📋 Resumo por Vistoriador</div>", unsafe_allow_html=True)
 
@@ -465,7 +410,7 @@ wd_passados = _calc_wd_passados(view)
 grp = grp.merge(wd_passados, on="VISTORIADOR", how="left").fillna({"DIAS_PASSADOS":0})
 grp["DIAS_PASSADOS"] = grp["DIAS_PASSADOS"].astype(int)
 
-# ---- METAS: mês ref mais recente
+# ---- METAS: usar o mês ref mais recente dentro do filtro
 if not view.empty:
     ref = max([d for d in view["__DATA__"] if isinstance(d, date)])
     ref_ym = f"{ref.year}-{ref.month:02d}"
@@ -492,6 +437,7 @@ for c in ["META_MENSAL","DIAS_UTEIS"]:
 grp["META_MENSAL"] = grp["META_MENSAL"].astype(int)
 grp["DIAS_UTEIS"]  = grp["DIAS_UTEIS"].astype(int)
 
+# ---- cálculos
 grp["META_DIA"] = np.where(grp["DIAS_UTEIS"]>0, grp["META_MENSAL"]/grp["DIAS_UTEIS"], 0.0)
 grp["FALTANTE_MES"] = np.maximum(grp["META_MENSAL"] - grp["LIQUIDO"], 0)
 grp["DIAS_RESTANTES"] = np.maximum(grp["DIAS_UTEIS"] - grp["DIAS_PASSADOS"], 0)
@@ -500,20 +446,32 @@ grp["MEDIA_DIA_ATUAL"] = np.where(grp["DIAS_PASSADOS"]>0, grp["LIQUIDO"]/grp["DI
 grp["PROJECAO_MES"] = (grp["LIQUIDO"] + grp["MEDIA_DIA_ATUAL"] * grp["DIAS_RESTANTES"]).round(0)
 grp["TENDENCIA_%"] = np.where(grp["META_MENSAL"]>0, (grp["PROJECAO_MES"]/grp["META_MENSAL"])*100, np.nan)
 
-grp = grp.sort_values(["PROJECAO_MES","LIQUIDO"], ascending=[False, False])
+# ---- NORMALIZAÇÃO DO TIPO + FILTRO SÓ PARA ESTA TABELA
+grp["TIPO_NORM"] = grp.get("TIPO","").astype(str).str.upper().str.replace("MOVEL","MÓVEL").str.strip()
+grp.loc[grp["TIPO_NORM"]=="", "TIPO_NORM"] = "—"
 
-fmt = grp.copy()
+tipo_options = [t for t in ["FIXO","MÓVEL"] if t in grp["TIPO_NORM"].unique().tolist()]
+if "—" in grp["TIPO_NORM"].unique():  # caso existam metas sem tipo
+    tipo_options.append("—")
+
+sel_tipos = st.multiselect(
+    "Tipo (filtro apenas desta tabela)",
+    options=tipo_options,
+    default=tipo_options,
+    key="resumo_tipo_filter"
+)
+grp_tbl = grp if not sel_tipos else grp[grp["TIPO_NORM"].isin(sel_tipos)]
+
+# ---- ordenação e formatação (com emojis)
+grp_tbl = grp_tbl.sort_values(["PROJECAO_MES","LIQUIDO"], ascending=[False, False])
+fmt = grp_tbl.copy()
 
 def chip_tend(p):
-    if pd.isna(p):
-        return "—"
+    if pd.isna(p): return "—"
     p = float(p)
-    if p >= 100:
-        return f"{p:.0f}% 🚀"
-    if p >= 95:
-        return f"{p:.0f}% 💪"
-    if p >= 85:
-        return f"{p:.0f}% 😬"
+    if p >= 100: return f"{p:.0f}% 🚀"
+    if p >= 95:  return f"{p:.0f}% 💪"
+    if p >= 85:  return f"{p:.0f}% 😬"
     return f"{p:.0f}% 😟"
 
 def chip_nec(x):
@@ -523,7 +481,7 @@ def chip_nec(x):
         return "—"
     return "0 ✅" if v <= 0 else f"{int(round(v))} 🔥"
 
-fmt["TIPO"] = fmt.get("TIPO","").map({"FIXO":"🏢 FIXO","MÓVEL":"🚗 MÓVEL","MOVEL":"🚗 MÓVEL"}).fillna("—")
+fmt["TIPO"] = fmt["TIPO_NORM"].map({"FIXO":"🏢 FIXO","MÓVEL":"🚗 MÓVEL"}).fillna("—")
 fmt["META_MENSAL"]      = fmt["META_MENSAL"].map(lambda x: f"{int(x):,}".replace(",", "."))
 fmt["DIAS_UTEIS"]       = fmt["DIAS_UTEIS"].map(lambda x: f"{int(x)}")
 fmt["META_DIA"]         = fmt["META_DIA"].map(lambda x: f"{x:,.1f}".replace(",", "X").replace(".", ",").replace("X","."))
@@ -531,8 +489,8 @@ fmt["VISTORIAS"]        = fmt["VISTORIAS"].map(lambda x: f"{int(x)}")
 fmt["REVISTORIAS"]      = fmt["REVISTORIAS"].map(lambda x: f"{int(x)}")
 fmt["LIQUIDO"]          = fmt["LIQUIDO"].map(lambda x: f"{int(x)}")
 fmt["FALTANTE_MES"]     = fmt["FALTANTE_MES"].map(lambda x: f"{int(x)}")
-fmt["NECESSIDADE_DIA"]  = grp["NECESSIDADE_DIA"].apply(chip_nec)
-fmt["TENDÊNCIA"]        = grp["TENDENCIA_%"].apply(chip_tend)
+fmt["NECESSIDADE_DIA"]  = fmt["NECESSIDADE_DIA"].apply(chip_nec)
+fmt["TENDÊNCIA"]        = fmt["TENDENCIA_%"].apply(chip_tend)
 fmt["PROJECAO_MES"]     = fmt["PROJECAO_MES"].map(lambda x: "—" if pd.isna(x) else f"{int(round(x))}")
 
 cols_show = [
@@ -554,7 +512,6 @@ else:
 # Evolução diária
 # =========================
 st.markdown("<div class='section-title'>📈 Evolução diária</div>", unsafe_allow_html=True)
-
 if view.empty:
     st.caption("Sem dados no período selecionado.")
 else:
@@ -654,6 +611,7 @@ else:
                 .agg(VISTORIAS=("IS_REV","size"), REVISTORIAS=("IS_REV","sum")).reset_index())
     prod_mes["LIQUIDO"] = prod_mes["VISTORIAS"] - prod_mes["REVISTORIAS"]
 
+    # metas do mês ref
     if not df_metas_all.empty:
         metas_join = df_metas_all[df_metas_all["__YM__"] == f"{ref_ano}-{ref_mes:02d}"][["VISTORIADOR","TIPO","META_MENSAL"]].copy()
     else:
@@ -689,7 +647,7 @@ else:
         ("Líquido", f"{liq_tot:,}".replace(",", ".")),
         ("% Ating. (sobre geral)", chip_pct(ating_g)),
     ]
-    st.markdown('<div class="card-container">' + "".join([f"<div class='card'><h4>{t}</h4><h2>{v}</h2></div>" for t, v in cards_mes]) + "</div>", unsafe_allow_html=True)
+    st.markdown('<div class="card-container">' + "".join([f"<div class=\'card\'><h4>{t}</h4><h2>{v}</h2></div>" for t, v in cards_mes]) + "</div>", unsafe_allow_html=True)
 
     def chip_pct_row(p):
         if pd.isna(p): return "—"
@@ -705,11 +663,12 @@ else:
         if len(df_sub) == 0:
             st.caption(f"Sem dados para {titulo} em {mes_label}.")
             return
-        rk = df_sub[df_sub["ATING_%"].notna()].copy()
+        rk = df_sub[df_sub["META_MENSAL"] > 0].copy()
         if len(rk) == 0:
             st.caption(f"Ninguém com META cadastrada para {titulo}.")
             return
         rk = rk.sort_values("ATING_%", ascending=False)
+
         top = rk.head(5).copy()
         medals = ["🥇","🥈","🥉","🏅","🏅"]
         top["🏅"] = [medals[i] if i < len(medals) else "🏅" for i in range(len(top))]
@@ -720,7 +679,7 @@ else:
             "Vistorias (geral)": top["VISTORIAS"].map(int),
             "Revistorias": top["REVISTORIAS"].map(int),
             "Líquido": top["LIQUIDO"].map(int),
-            "% Ating. (geral/meta)": top["ATING_%"].map(lambda p: "—" if pd.isna(p) else f"{p:.0f}%"),
+            "% Ating. (geral/meta)": top["ATING_%"].map(chip_pct_row),
         })
 
         bot = rk.tail(5).sort_values("ATING_%", ascending=True).copy()
@@ -733,7 +692,7 @@ else:
             "Vistorias (geral)": bot["VISTORIAS"].map(int),
             "Revistorias": bot["REVISTORIAS"].map(int),
             "Líquido": bot["LIQUIDO"].map(int),
-            "% Ating. (geral/meta)": bot["ATING_%"].map(lambda p: "—" if pd.isna(p) else f"{p:.0f}%"),
+            "% Ating. (geral/meta)": bot["ATING_%"].map(chip_pct_row),
         })
 
         c1, c2 = st.columns(2)
@@ -787,6 +746,7 @@ else:
                      REVISTORIAS_DIA=("IS_REV", "sum")).reset_index())
     prod_dia["LIQUIDO_DIA"] = prod_dia["VISTORIAS_DIA"] - prod_dia["REVISTORIAS_DIA"]
 
+    # metas do mês daquele dia
     ym_day = f"{used_day.year}-{used_day.month:02d}"
     if not df_metas_all.empty:
         metas_join = df_metas_all[df_metas_all["__YM__"] == ym_day][["VISTORIADOR","TIPO","META_MENSAL","DIAS_UTEIS"]].copy()
