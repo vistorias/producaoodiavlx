@@ -292,6 +292,7 @@ def cb_clear_unids():
 # =========================
 st.subheader("🔎 Filtros")
 
+# Unidades
 colU1, colU2 = st.columns([4,2])
 with colU1:
     st.multiselect("Unidades", options=unidades_opts, key="unids_tmp", help="Selecione as unidades desejadas")
@@ -300,21 +301,42 @@ with colU2:
     b1.button("Selecionar todas (Unid.)", use_container_width=True, on_click=cb_sel_all_unids)
     b2.button("Limpar (Unid.)", use_container_width=True, on_click=cb_clear_unids)
 
+# ===== NOVO BLOCO: MÊS DE REFERÊNCIA + PERÍODO (DENTRO DO MÊS) =====
 datas_validas = [d for d in df["__DATA__"] if isinstance(d, date)]
-dmin = min(datas_validas) if datas_validas else date.today()
-dmax = max(datas_validas) if datas_validas else date.today()
+if not datas_validas:
+    st.error("Base sem datas válidas em __DATA__.")
+    st.stop()
 
-if "dt_ini" not in st.session_state:
-    st.session_state["dt_ini"] = dmin
-if "dt_fim" not in st.session_state:
-    st.session_state["dt_fim"] = dmax
+ser_datas = pd.Series(datas_validas)
+ym_all = sorted(ser_datas.map(lambda d: f"{d.year}-{d.month:02d}").unique().tolist())
+label_map = {f"{m[5:]}/{m[:4]}": m for m in ym_all}
 
-colD1, colD2 = st.columns(2)
-with colD1:
-    st.date_input("Data inicial", key="dt_ini", format="DD/MM/YYYY")
-with colD2:
-    st.date_input("Data final", key="dt_fim", format="DD/MM/YYYY")
+sel_label = st.selectbox(
+    "Mês de referência",
+    options=list(label_map.keys()),
+    index=len(ym_all) - 1  # último mês disponível
+)
+ym_sel = label_map[sel_label]
+ref_year, ref_month = int(ym_sel[:4]), int(ym_sel[5:7])
 
+datas_mes = [d for d in datas_validas if d.year == ref_year and d.month == ref_month]
+min_d = min(datas_mes)
+max_d = max(datas_mes)
+
+drange = st.date_input(
+    "Período (dentro do mês)",
+    value=(min_d, max_d),
+    min_value=min_d,
+    max_value=max_d,
+    format="DD/MM/YYYY",
+    key="dt_range"
+)
+if isinstance(drange, tuple) and len(drange) == 2:
+    start_d, end_d = drange
+else:
+    start_d, end_d = min_d, max_d
+
+# Vistoriadores
 colV1, colV2 = st.columns([4,2])
 with colV1:
     st.multiselect("Vistoriadores", options=vist_opts, key="vists_tmp", help="Filtra pela(s) pessoa(s).")
@@ -324,13 +346,21 @@ with colV2:
     b4.button("Limpar", use_container_width=True, on_click=cb_clear_vists)
 
 # =========================
-# Aplicar filtros globais
+# Aplicar filtros globais (view = base para tudo)
 # =========================
 view = df.copy()
+
 if st.session_state.unids_tmp:
     view = view[view[col_unid].isin(st.session_state.unids_tmp)]
-if st.session_state.dt_ini and st.session_state.dt_fim:
-    view = view[(view["__DATA__"] >= st.session_state.dt_ini) & (view["__DATA__"] <= st.session_state.dt_fim)]
+
+# filtro pelo mês selecionado
+view = view[view["__DATA__"].apply(
+    lambda d: isinstance(d, date) and d.year == ref_year and d.month == ref_month
+)]
+
+# filtro pelo período dentro do mês
+view = view[(view["__DATA__"] >= start_d) & (view["__DATA__"] <= end_d)]
+
 if st.session_state.vists_tmp:
     view = view[view["VISTORIADOR"].isin(st.session_state.vists_tmp)]
 
@@ -351,7 +381,12 @@ cards = [
     (_nt("Revistorias"),    f"{revistorias_total:,}".replace(",", ".")),
     (_nt("% Revistorias"),  f"{pct_rev:,.1f}%".replace(",", "X").replace(".", ",").replace("X", ".")),
 ]
-st.markdown('<div class="card-container">' + "".join([f"<div class=\'card\'><h4>{t}</h4><h2>{v}</h2></div>" for t, v in cards]) + "</div>", unsafe_allow_html=True)
+st.markdown(
+    '<div class="card-container">' +
+    "".join([f"<div class='card'><h4>{t}</h4><h2>{v}</h2></div>" for t, v in cards]) +
+    "</div>",
+    unsafe_allow_html=True
+)
 
 # =========================
 # Resumo por Vistoriador  (AGORA COM FILTRO FIXO/MÓVEL APENAS AQUI)
@@ -625,7 +660,12 @@ else:
         ("Líquido", f"{liq_tot:,}".replace(",", ".")),
         ("% Ating. (sobre geral)", chip_pct(ating_g)),
     ]
-    st.markdown('<div class="card-container">' + "".join([f"<div class=\'card\'><h4>{t}</h4><h2>{v}</h2></div>" for t, v in cards_mes]) + "</div>", unsafe_allow_html=True)
+    st.markdown(
+        '<div class="card-container">' +
+        "".join([f"<div class='card'><h4>{t}</h4><h2>{v}</h2></div>" for t, v in cards_mes]) +
+        "</div>",
+        unsafe_allow_html=True
+    )
 
     def chip_pct_row(p):
         if pd.isna(p): return "—"
@@ -795,3 +835,4 @@ else:
 
     st.markdown("#### 🚗 MÓVEL")
     render_ranking_dia(base_dia[base_dia["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
+
