@@ -5,9 +5,14 @@
 # - Junta dados de todos os meses e lê METAS por mês
 # - KPIs, Resumo (com filtro FIXO/MÓVEL só aqui), Gráficos, Auditoria,
 #   Rankings Mensal e do Dia
+#
+# AJUSTE PRINCIPAL:
+# - Removeu o "silencioso" que retornava [] imediatamente (except: return [])
+# - Agora o app "espera" (spinner) e mostra o erro real: acesso/aba/colunas
+# - Aceita URL/LINK, e ATIVO com variações
 # ------------------------------------------------------------
 
-import os, re, json
+import os, re, json, time
 from datetime import datetime, date
 from typing import Tuple, List, Optional
 
@@ -19,20 +24,22 @@ import altair as alt
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+
 # =========================
 # CONFIG BÁSICA
 # =========================
-st.set_page_config(page_title="🧰 Produção por Vistoriador - VELOX VISTORIAS (multi-meses)", layout="wide")
-st.title("🧰 Painel de Produção por Vistoriador - VELOX VISTORIAS")
+st.set_page_config(page_title="Produção por Vistoriador - VELOX VISTORIAS (multi-meses)", layout="wide")
+st.title("Painel de Produção por Vistoriador - VELOX VISTORIAS")
 
 # === Planilha-Índice (ARQUIVOS) ===
 INDEX_SHEET_ID = (st.secrets.get("velox_index_sheet_id", "") or "").strip()
 INDEX_TAB_NAME = "ARQUIVOS"
+
 if not INDEX_SHEET_ID:
-    st.error("Defina no **secrets.toml** a chave **velox_index_sheet_id** com o ID da planilha-índice da VELOX VISTORIAS.")
+    st.error("Defina no secrets.toml a chave velox_index_sheet_id com o ID da planilha-índice da VELOX.")
     st.stop()
 
-# --- estilos (sem o .hero) ---
+# --- estilos ---
 st.markdown("""
 <style>
   .notranslate { unicode-bidi: plaintext; }
@@ -47,6 +54,7 @@ st.markdown("""
 
 def _nt(txt: str) -> str:
     return f"<span class='notranslate' translate='no'>{txt}</span>"
+
 
 # =========================
 # Conexão Google Sheets
@@ -75,29 +83,40 @@ def _load_sa_info():
             with st.expander("Detalhes"):
                 st.exception(e)
             st.stop()
+
     return dict(block), "dict"
 
 def make_client():
     global SERVICE_EMAIL
     info, _ = _load_sa_info()
     SERVICE_EMAIL = info.get("client_email", "(sem client_email)")
-    scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    scopes = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive"
+    ]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(info, scopes)
     return gspread.authorize(creds)
 
+
 # ---- util: pegar ID de URL/ID
 ID_RE = re.compile(r'/d/([a-zA-Z0-9-_]+)')
+
 def extract_sheet_id(s: str) -> Optional[str]:
     s = (s or "").strip()
-    if not s: return None
+    if not s:
+        return None
     m = ID_RE.search(s)
-    if m: return m.group(1)
-    if re.fullmatch(r'[a-zA-Z0-9-_]{20,}', s): return s
+    if m:
+        return m.group(1)
+    if re.fullmatch(r'[a-zA-Z0-9-_]{20,}', s):
+        return s
     return None
+
 
 # ---- helpers diversos
 def parse_date_any(x):
-    if pd.isna(x) or x == "": return pd.NaT
+    if pd.isna(x) or x == "":
+        return pd.NaT
     s = str(x).strip()
     for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
         try:
@@ -128,9 +147,16 @@ def infer_year_month_from_sheet(sh_title: str, df_data: pd.DataFrame) -> Optiona
                 pass
     return None
 
+
 # =========================
 # Lê UMA planilha de mês (dados + METAS) e devolve AAAA-MM
 # =========================
+@st.cache_data(show_spinner=False, ttl=300)
+def read_one_sheet_cached(sheet_id: str) -> Tuple[pd.DataFrame, pd.DataFrame, str]:
+    # cache precisa ser dentro de função sem client; cria client aqui
+    gs_client = make_client()
+    return read_one_sheet(gs_client, sheet_id)
+
 def read_one_sheet(gs_client, sheet_id: str) -> Tuple[pd.DataFrame, pd.DataFrame, str]:
     sh = gs_client.open_by_key(sheet_id)
     title = sh.title or sheet_id
@@ -145,9 +171,11 @@ def read_one_sheet(gs_client, sheet_id: str) -> Tuple[pd.DataFrame, pd.DataFrame
         col_chas  = "CHASSI"    if "CHASSI"    in data.columns else None
         col_per   = "PERITO"    if "PERITO"    in data.columns else None
         col_dig   = "DIGITADOR" if "DIGITADOR" in data.columns else None
+
         req = [col_unid, col_data, col_chas, (col_per or col_dig)]
         if any(r is None for r in req):
             raise ValueError(f"Planilha {title}: precisa conter UNIDADE, DATA, CHASSI, PERITO/DIGITADOR.")
+
         data[col_unid] = data[col_unid].map(_upper_strip)
         data[col_chas] = data[col_chas].map(_upper_strip)
         data["__DATA__"] = data[col_data].apply(parse_date_any)
@@ -184,14 +212,18 @@ def read_one_sheet(gs_client, sheet_id: str) -> Tuple[pd.DataFrame, pd.DataFrame
         dfm.columns = [c.strip().upper() for c in dfm.columns]
         ren = {}
         for cand in ["META_MENSAL", "META MEN SAL", "META_MEN SAL", "META_MEN.SAL", "META MENSA"]:
-            if cand in dfm.columns: ren[cand] = "META_MENSAL"
+            if cand in dfm.columns:
+                ren[cand] = "META_MENSAL"
         for cand in ["DIAS UTEIS", "DIAS ÚTEIS", "DIAS_UTEIS"]:
-            if cand in dfm.columns: ren[cand] = "DIAS_UTEIS"
+            if cand in dfm.columns:
+                ren[cand] = "DIAS_UTEIS"
         dfm = dfm.rename(columns=ren)
+
         if "VISTORIADOR" in dfm.columns:
             dfm["VISTORIADOR"] = dfm["VISTORIADOR"].map(_upper_strip)
         if "UNIDADE" in dfm.columns:
             dfm["UNIDADE"] = dfm["UNIDADE"].astype(str).map(_upper_strip)
+
         dfm["TIPO"] = dfm.get("TIPO", "").astype(str).map(_upper_strip)
         dfm["META_MENSAL"] = pd.to_numeric(dfm.get("META_MENSAL", 0), errors="coerce").fillna(0).astype(int)
         dfm["DIAS_UTEIS"]  = pd.to_numeric(dfm.get("DIAS_UTEIS", 0),  errors="coerce").fillna(0).astype(int)
@@ -207,54 +239,125 @@ def read_one_sheet(gs_client, sheet_id: str) -> Tuple[pd.DataFrame, pd.DataFrame
 
     return data, dfm, title
 
+
 # =========================
-# Leitura SILENCIOSA da PLANILHA-ÍNDICE
+# Leitura da PLANILHA-ÍNDICE (AGORA COM ERRO REAL)
 # =========================
 def _yes(v) -> bool:
     return str(v).strip().upper() in {"S", "SIM", "TRUE", "T", "1", "Y", "YES"}
 
-def load_ids_from_index(gs_client) -> List[str]:
+@st.cache_data(show_spinner=False, ttl=120)
+def load_ids_from_index_cached(index_sheet_id: str, tab_name: str) -> List[str]:
+    gs_client = make_client()
+
+    # 1) abre a planilha-índice
+    sh = gs_client.open_by_key(index_sheet_id)
+
+    # 2) abre a aba (com fallback simples)
     try:
-        sh = gs_client.open_by_key(INDEX_SHEET_ID)
-        ws = sh.worksheet(INDEX_TAB_NAME)
-        rows = ws.get_all_records()
-        if not rows:
-            return []
-        norm = [{str(k).strip().upper(): r[k] for k in r} for r in rows]
-        ativos = [r for r in norm if _yes(r.get("ATIVO", "S"))]
-        ids = []
-        for r in ativos:
-            sid = extract_sheet_id(str(r.get("URL","")))
-            if sid: ids.append(sid)
-        return ids
+        ws = sh.worksheet(tab_name)
     except Exception:
+        # tenta fallback por variação de nome
+        tabs = [w.title for w in sh.worksheets()]
+        alts = [t for t in tabs if t.strip().upper() == tab_name.strip().upper()]
+        if alts:
+            ws = sh.worksheet(alts[0])
+        else:
+            raise
+
+    rows = ws.get_all_records()
+    if not rows:
         return []
+
+    # normaliza chaves
+    norm = []
+    for r in rows:
+        rr = {}
+        for k in r:
+            rr[str(k).strip().upper()] = r[k]
+        norm.append(rr)
+
+    # aceita variações de coluna
+    def pick_url(row: dict) -> str:
+        for key in ["URL", "LINK", "PLANILHA", "ARQUIVO"]:
+            if key in row and str(row.get(key) or "").strip():
+                return str(row.get(key) or "")
+        return ""
+
+    def pick_ativo(row: dict) -> str:
+        for key in ["ATIVO", "ATIVA", "STATUS"]:
+            if key in row:
+                return str(row.get(key) or "")
+        return "S"
+
+    ids = []
+    for r in norm:
+        if not _yes(pick_ativo(r)):
+            continue
+        sid = extract_sheet_id(pick_url(r))
+        if sid:
+            ids.append(sid)
+
+    return ids
+
 
 # =========================
 # Entrada – múltiplas planilhas (sempre via índice)
 # =========================
-client = make_client()
-sheet_ids: List[str] = load_ids_from_index(client)
+with st.spinner("Conectando ao Google Sheets e lendo a planilha-índice..."):
+    try:
+        client = make_client()
+    except Exception as e:
+        st.error("Falha ao autenticar no Google (Service Account).")
+        with st.expander("Detalhes"):
+            st.exception(e)
+        st.stop()
+
+    # Mostra o e-mail da conta de serviço (para você conferir compartilhamento)
+    st.caption(f"Conta de serviço: {SERVICE_EMAIL}")
+
+    try:
+        sheet_ids: List[str] = load_ids_from_index_cached(INDEX_SHEET_ID, INDEX_TAB_NAME)
+    except Exception as e:
+        st.error("Não consegui ler a planilha-índice. Motivo provável: falta de compartilhamento com a conta de serviço, aba inexistente, ou permissão.")
+        with st.expander("Detalhes"):
+            st.exception(e)
+        st.stop()
 
 if not sheet_ids:
-    st.error("Não encontrei dados ativos no índice. Verifique o compartilhamento/ATIVO na planilha-índice.")
+    st.error("Não encontrei nenhum item ATIVO com URL/ID válido na aba ARQUIVOS da planilha-índice.")
+    st.info("Verifique: (1) compartilhamento da planilha-índice com a conta de serviço; (2) coluna URL/LINK; (3) coluna ATIVO marcada como S.")
     st.stop()
 
-all_df, all_metas = [], []
-for sid in sheet_ids:
-    try:
-        dfi, dmf, _ = read_one_sheet(client, sid)
-        if not dfi.empty: all_df.append(dfi)
-        if not dmf.empty: all_metas.append(dmf)
-    except Exception:
-        pass
+with st.spinner(f"Lendo {len(sheet_ids)} planilha(s) do índice e consolidando..."):
+    all_df, all_metas = [], []
+    errors = []
 
-if len(all_df) == 0:
-    st.error("Não consegui montar dados de nenhuma planilha.")
-    st.stop()
+    for sid in sheet_ids:
+        try:
+            dfi, dmf, _ = read_one_sheet_cached(sid)
+            if not dfi.empty:
+                all_df.append(dfi)
+            if not dmf.empty:
+                all_metas.append(dmf)
+        except Exception as e:
+            errors.append((sid, str(e)))
+
+    if errors and not all_df:
+        st.error("Não consegui montar dados de nenhuma planilha do índice.")
+        with st.expander("Erros (por planilha)"):
+            for sid, msg in errors[:50]:
+                st.write(f"- {sid}: {msg}")
+        st.stop()
+
+    if errors:
+        with st.expander("Algumas planilhas falharam (clique para ver)"):
+            for sid, msg in errors[:50]:
+                st.write(f"- {sid}: {msg}")
 
 df = pd.concat(all_df, ignore_index=True)
 df_metas_all = pd.concat(all_metas, ignore_index=True) if len(all_metas) else pd.DataFrame()
+
 
 # =========================
 # Continuação
@@ -262,6 +365,11 @@ df_metas_all = pd.concat(all_metas, ignore_index=True) if len(all_metas) else pd
 orig_cols = [c for c in df.columns]
 col_unid  = "UNIDADE" if "UNIDADE" in orig_cols else None
 col_chassi= "CHASSI"  if "CHASSI"  in orig_cols else None
+
+if not col_unid or not col_chassi or "__DATA__" not in df.columns or "VISTORIADOR" not in df.columns:
+    st.error("Base consolidada não contém as colunas necessárias (UNIDADE, CHASSI, __DATA__, VISTORIADOR).")
+    st.stop()
+
 
 # =========================
 # Estado / Callbacks dos filtros
@@ -277,20 +385,24 @@ vist_opts = sorted([v for v in df["VISTORIADOR"].dropna().unique() if v])
 def cb_sel_all_vists():
     st.session_state.vists_tmp = vist_opts[:]
     st.rerun()
+
 def cb_clear_vists():
     st.session_state.vists_tmp = []
     st.rerun()
+
 def cb_sel_all_unids():
     st.session_state.unids_tmp = unidades_opts[:]
     st.rerun()
+
 def cb_clear_unids():
     st.session_state.unids_tmp = []
     st.rerun()
 
+
 # =========================
 # Filtros (UI)
 # =========================
-st.subheader("🔎 Filtros")
+st.subheader("Filtros")
 
 # Unidades
 colU1, colU2 = st.columns([4,2])
@@ -301,7 +413,7 @@ with colU2:
     b1.button("Selecionar todas (Unid.)", use_container_width=True, on_click=cb_sel_all_unids)
     b2.button("Limpar (Unid.)", use_container_width=True, on_click=cb_clear_unids)
 
-# ===== NOVO BLOCO: MÊS DE REFERÊNCIA + PERÍODO (DENTRO DO MÊS) =====
+# Mês de referência + Período (dentro do mês)
 datas_validas = [d for d in df["__DATA__"] if isinstance(d, date)]
 if not datas_validas:
     st.error("Base sem datas válidas em __DATA__.")
@@ -314,7 +426,7 @@ label_map = {f"{m[5:]}/{m[:4]}": m for m in ym_all}
 sel_label = st.selectbox(
     "Mês de referência",
     options=list(label_map.keys()),
-    index=len(ym_all) - 1  # último mês disponível
+    index=len(ym_all) - 1
 )
 ym_sel = label_map[sel_label]
 ref_year, ref_month = int(ym_sel[:4]), int(ym_sel[5:7])
@@ -345,8 +457,9 @@ with colV2:
     b3.button("Selecionar todos", use_container_width=True, on_click=cb_sel_all_vists)
     b4.button("Limpar", use_container_width=True, on_click=cb_clear_vists)
 
+
 # =========================
-# Aplicar filtros globais (view = base para tudo)
+# Aplicar filtros globais
 # =========================
 view = df.copy()
 
@@ -354,9 +467,7 @@ if st.session_state.unids_tmp:
     view = view[view[col_unid].isin(st.session_state.unids_tmp)]
 
 # filtro pelo mês selecionado
-view = view[view["__DATA__"].apply(
-    lambda d: isinstance(d, date) and d.year == ref_year and d.month == ref_month
-)]
+view = view[view["__DATA__"].apply(lambda d: isinstance(d, date) and d.year == ref_year and d.month == ref_month)]
 
 # filtro pelo período dentro do mês
 view = view[(view["__DATA__"] >= start_d) & (view["__DATA__"] <= end_d)]
@@ -366,6 +477,7 @@ if st.session_state.vists_tmp:
 
 if view.empty:
     st.info("Nenhum registro para os filtros aplicados.")
+
 
 # =========================
 # KPIs
@@ -388,10 +500,11 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+
 # =========================
-# Resumo por Vistoriador  (AGORA COM FILTRO FIXO/MÓVEL APENAS AQUI)
+# Resumo por Vistoriador
 # =========================
-st.markdown("<div class='section-title'>📋 Resumo por Vistoriador</div>", unsafe_allow_html=True)
+st.markdown("<div class='section-title'>Resumo por Vistoriador</div>", unsafe_allow_html=True)
 
 grp = (view
        .groupby("VISTORIADOR", dropna=False)
@@ -423,7 +536,7 @@ wd_passados = _calc_wd_passados(view)
 grp = grp.merge(wd_passados, on="VISTORIADOR", how="left").fillna({"DIAS_PASSADOS":0})
 grp["DIAS_PASSADOS"] = grp["DIAS_PASSADOS"].astype(int)
 
-# ---- METAS: usar o mês ref mais recente dentro do filtro
+# METAS (mês ref dentro do filtro)
 if not view.empty:
     ref = max([d for d in view["__DATA__"] if isinstance(d, date)])
     ref_ym = f"{ref.year}-{ref.month:02d}"
@@ -450,7 +563,7 @@ for c in ["META_MENSAL","DIAS_UTEIS"]:
 grp["META_MENSAL"] = grp["META_MENSAL"].astype(int)
 grp["DIAS_UTEIS"]  = grp["DIAS_UTEIS"].astype(int)
 
-# ---- cálculos
+# cálculos
 grp["META_DIA"] = np.where(grp["DIAS_UTEIS"]>0, grp["META_MENSAL"]/grp["DIAS_UTEIS"], 0.0)
 grp["FALTANTE_MES"] = np.maximum(grp["META_MENSAL"] - grp["LIQUIDO"], 0)
 grp["DIAS_RESTANTES"] = np.maximum(grp["DIAS_UTEIS"] - grp["DIAS_PASSADOS"], 0)
@@ -459,7 +572,7 @@ grp["MEDIA_DIA_ATUAL"] = np.where(grp["DIAS_PASSADOS"]>0, grp["LIQUIDO"]/grp["DI
 grp["PROJECAO_MES"] = (grp["LIQUIDO"] + grp["MEDIA_DIA_ATUAL"] * grp["DIAS_RESTANTES"]).round(0)
 grp["TENDENCIA_%"] = np.where(grp["META_MENSAL"]>0, (grp["PROJECAO_MES"]/grp["META_MENSAL"])*100, np.nan)
 
-# ---- NORMALIZAÇÃO DO TIPO + FILTRO SÓ PARA ESTA TABELA
+# normalização tipo + filtro só para tabela
 grp["TIPO_NORM"] = grp.get("TIPO","").astype(str).str.upper().str.replace("MOVEL","MÓVEL").str.strip()
 grp.loc[grp["TIPO_NORM"]=="", "TIPO_NORM"] = "—"
 
@@ -475,7 +588,7 @@ sel_tipos = st.multiselect(
 )
 grp_tbl = grp if not sel_tipos else grp[grp["TIPO_NORM"].isin(sel_tipos)]
 
-# ---- ordenação e formatação (com emojis)
+# ordenação e formatação
 grp_tbl = grp_tbl.sort_values(["PROJECAO_MES","LIQUIDO"], ascending=[False, False])
 fmt = grp_tbl.copy()
 
@@ -519,12 +632,13 @@ if fmt.empty or not cols_show_avail:
 else:
     st.dataframe(fmt[cols_show_avail], use_container_width=True, hide_index=True)
     csv = fmt[cols_show_avail].to_csv(index=False).encode("utf-8-sig")
-    st.download_button("⬇️ Baixar resumo (CSV)", data=csv, file_name="resumo_vistoriador.csv", mime="text/csv")
+    st.download_button("Baixar resumo (CSV)", data=csv, file_name="resumo_vistoriador.csv", mime="text/csv")
+
 
 # =========================
 # Evolução diária
 # =========================
-st.markdown("<div class='section-title'>📈 Evolução diária</div>", unsafe_allow_html=True)
+st.markdown("<div class='section-title'>Evolução diária</div>", unsafe_allow_html=True)
 if view.empty:
     st.caption("Sem dados no período selecionado.")
 else:
@@ -550,10 +664,11 @@ else:
                 ).properties(height=360))
         st.altair_chart(line, use_container_width=True)
 
+
 # =========================
 # Produção por Unidade (Líquido)
 # =========================
-st.markdown("<div class='section-title'>🏙️ Produção por Unidade (Líquido)</div>", unsafe_allow_html=True)
+st.markdown("<div class='section-title'>Produção por Unidade (Líquido)</div>", unsafe_allow_html=True)
 if view.empty:
     st.caption("Sem dados de unidades para o período.")
 else:
@@ -575,10 +690,11 @@ else:
                     ).properties(height=420))
         st.altair_chart(bar_unid, use_container_width=True)
 
+
 # =========================
 # Auditoria – Chassis com múltiplas vistorias
 # =========================
-st.markdown("<div class='section-title'>🕵️ Chassis com múltiplas vistorias</div>", unsafe_allow_html=True)
+st.markdown("<div class='section-title'>Chassis com múltiplas vistorias</div>", unsafe_allow_html=True)
 if view.empty:
     st.caption("Nenhum chassi com múltiplas vistorias dentro dos filtros.")
 else:
@@ -601,14 +717,15 @@ else:
         dup["ULTIMO_VIST"]   = dup[col_chassi].map(last_map)
         st.dataframe(dup, use_container_width=True, hide_index=True)
 
+
 # =========================
-# 🧮 CONSOLIDADO DO MÊS + RANKING MENSAL (TOP/BOTTOM)
+# CONSOLIDADO DO MÊS + RANKING MENSAL (TOP/BOTTOM)
 # =========================
 TOP_LABEL = "TOP BOX"
 BOTTOM_LABEL = "BOTTOM BOX"
 
 st.markdown("---")
-st.markdown("<div class='section-title'>🧮 Consolidado do Mês + Ranking por Vistoriador</div>", unsafe_allow_html=True)
+st.markdown("<div class='section-title'>Consolidado do Mês + Ranking por Vistoriador</div>", unsafe_allow_html=True)
 
 datas_ok = [d for d in view["__DATA__"] if isinstance(d, date)]
 if len(datas_ok) == 0:
@@ -624,7 +741,6 @@ else:
                 .agg(VISTORIAS=("IS_REV","size"), REVISTORIAS=("IS_REV","sum")).reset_index())
     prod_mes["LIQUIDO"] = prod_mes["VISTORIAS"] - prod_mes["REVISTORIAS"]
 
-    # metas do mês ref
     if not df_metas_all.empty:
         metas_join = df_metas_all[df_metas_all["__YM__"] == f"{ref_ano}-{ref_mes:02d}"][["VISTORIADOR","TIPO","META_MENSAL"]].copy()
     else:
@@ -721,20 +837,18 @@ else:
             st.markdown(f"**{_nt('BOTTOM BOX')} — {mes_label}**", unsafe_allow_html=True)
             st.dataframe(bot_fmt, use_container_width=True, hide_index=True)
 
-    st.markdown("#### 🏢 FIXO")
+    st.markdown("#### FIXO")
     render_ranking(base_mes[base_mes["TIPO"] == "FIXO"], "vistoriadores FIXO")
 
-    st.markdown("#### 🚗 MÓVEL")
+    st.markdown("#### MÓVEL")
     render_ranking(base_mes[base_mes["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
 
-# =========================
-# 📅 RANKING DO DIA POR VISTORIADOR (TOP/BOTTOM)
-# =========================
-TOP_LABEL = "TOP BOX"
-BOTTOM_LABEL = "BOTTOM BOX"
 
+# =========================
+# RANKING DO DIA POR VISTORIADOR (TOP/BOTTOM)
+# =========================
 st.markdown("---")
-st.markdown("<div class='section-title'>📅 Ranking do Dia por Vistoriador</div>", unsafe_allow_html=True)
+st.markdown("<div class='section-title'>Ranking do Dia por Vistoriador</div>", unsafe_allow_html=True)
 
 dates_avail = sorted([d for d in view["__DATA__"] if isinstance(d, date)])
 if not dates_avail:
@@ -755,7 +869,7 @@ else:
     dia_label = used_day.strftime("%d/%m/%Y")
     if info_msg:
         st.caption(info_msg)
-    st.caption(f"Dia exibido no ranking: **{dia_label}**")
+    st.caption(f"Dia exibido no ranking: {dia_label}")
 
     view_dia = view[view["__DATA__"] == used_day].copy()
 
@@ -764,7 +878,6 @@ else:
                      REVISTORIAS_DIA=("IS_REV", "sum")).reset_index())
     prod_dia["LIQUIDO_DIA"] = prod_dia["VISTORIAS_DIA"] - prod_dia["REVISTORIAS_DIA"]
 
-    # metas do mês daquele dia
     ym_day = f"{used_day.year}-{used_day.month:02d}"
     if not df_metas_all.empty:
         metas_join = df_metas_all[df_metas_all["__YM__"] == ym_day][["VISTORIADOR","TIPO","META_MENSAL","DIAS_UTEIS"]].copy()
@@ -775,6 +888,7 @@ else:
     base_dia["TIPO"] = base_dia["TIPO"].astype(str).str.upper().replace({"MOVEL":"MÓVEL"}).replace("", "—")
     for c in ["META_MENSAL","DIAS_UTEIS"]:
         base_dia[c] = pd.to_numeric(base_dia.get(c,0), errors="coerce").fillna(0)
+
     base_dia["META_DIA"] = np.where(base_dia["DIAS_UTEIS"]>0, base_dia["META_MENSAL"]/base_dia["DIAS_UTEIS"], 0.0)
     base_dia["ATING_DIA_%"] = np.where(base_dia["META_DIA"]>0, (base_dia["VISTORIAS_DIA"]/base_dia["META_DIA"])*100, np.nan)
 
@@ -798,6 +912,7 @@ else:
             return
 
         rk = rk.sort_values("ATING_DIA_%", ascending=False)
+
         top = rk.head(5).copy()
         medals = ["🥇","🥈","🥉","🏅","🏅"]
         top["🏅"] = [medals[i] if i < len(medals) else "🏅" for i in range(len(top))]
@@ -830,9 +945,8 @@ else:
             st.markdown(f"**{_nt(BOTTOM_LABEL)}**", unsafe_allow_html=True)
             st.dataframe(bot_fmt, use_container_width=True, hide_index=True)
 
-    st.markdown("#### 🏢 FIXO")
+    st.markdown("#### FIXO")
     render_ranking_dia(base_dia[base_dia["TIPO"] == "FIXO"], "vistoriadores FIXO")
 
-    st.markdown("#### 🚗 MÓVEL")
+    st.markdown("#### MÓVEL")
     render_ranking_dia(base_dia[base_dia["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
-
