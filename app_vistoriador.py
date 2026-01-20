@@ -966,7 +966,7 @@ else:
         ("Mês de referência", mes_label),
         ("Meta (soma)", f"{meta_tot:,}".replace(",", ".")),
         ("Vistorias (geral)", f"{vist_tot:,}".replace(",", ".")),
-        (_nt("Revistorias"), f"{rev_tot:,}".replace(",", ".")),
+        ("Revistorias", f"{rev_tot:,}".replace(",", ".")),
         ("Líquido", f"{liq_tot:,}".replace(",", ".")),
         ("% Ating. (sobre geral)", chip_pct(ating_g)),
     ]
@@ -1148,6 +1148,7 @@ else:
 
     st.markdown("#### MÓVEL")
     render_ranking_dia(base_dia[base_dia["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
+
 
 
 
