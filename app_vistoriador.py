@@ -380,18 +380,135 @@ st.markdown(
 )
 
 # ------------------ RESUMO (mês selecionado) ------------------
-st.markdown('<div class="section">Resumo por Vistoriador (mês selecionado)</div>', unsafe_allow_html=True)
+st.markdown("<div class='section-title'>Resumo por Vistoriador</div>", unsafe_allow_html=True)
 
-if base_mes.empty:
-    st.info("Sem produção no mês selecionado após filtros.")
-    st.stop()
+grp = (view
+       .groupby("VISTORIADOR", dropna=False)
+       .agg(
+            VISTORIAS=("IS_REV", "size"),
+            REVISTORIAS=("IS_REV", "sum"),
+            DIAS_ATIVOS=("__DATA__", lambda s: s.dropna().nunique()),
+            UNIDADES=(col_unid, lambda s: s.dropna().nunique()),
+       )
+       .reset_index())
 
-view_mes = base_mes.copy()
-view_mes["STATUS"] = np.where(view_mes["BATEU"], "BATEU", "NÃO BATEU")
-view_mes = view_mes.sort_values(["BATEU", "FALTANTE"], ascending=[True, False]).reset_index(drop=True)
+grp["LIQUIDO"] = grp["VISTORIAS"] - grp["REVISTORIAS"]
 
-tmp = view_mes[["UNIDADE", "VISTORIADOR", "TIPO", "META_MENSAL", "liq", "FALTANTE", "STATUS"]].rename(columns={"liq": "LIQUIDO"})
-st.dataframe(tmp, use_container_width=True, hide_index=True)
+def _is_workday(d):
+    return isinstance(d, date) and d.weekday() < 5
+
+def _calc_wd_passados(df_view: pd.DataFrame) -> pd.DataFrame:
+    if df_view.empty or "__DATA__" not in df_view.columns or "VISTORIADOR" not in df_view.columns:
+        return pd.DataFrame(columns=["VISTORIADOR", "DIAS_PASSADOS"])
+    mask = df_view["__DATA__"].apply(_is_workday)
+    if not mask.any():
+        vists = df_view["VISTORIADOR"].dropna().unique()
+        return pd.DataFrame({"VISTORIADOR": vists, "DIAS_PASSADOS": np.zeros(len(vists), dtype=int)})
+    out = (df_view.loc[mask].groupby("VISTORIADOR")["__DATA__"].nunique().reset_index().rename(columns={"__DATA__": "DIAS_PASSADOS"}))
+    out["DIAS_PASSADOS"] = out["DIAS_PASSADOS"].astype(int)
+    return out
+
+wd_passados = _calc_wd_passados(view)
+grp = grp.merge(wd_passados, on="VISTORIADOR", how="left").fillna({"DIAS_PASSADOS":0})
+grp["DIAS_PASSADOS"] = grp["DIAS_PASSADOS"].astype(int)
+
+# METAS (mês ref dentro do filtro)
+if not view.empty:
+    ref = max([d for d in view["__DATA__"] if isinstance(d, date)])
+    ref_ym = f"{ref.year}-{ref.month:02d}"
+else:
+    ref_ym = None
+
+if ref_ym and not df_metas_all.empty:
+    metas_ref = df_metas_all[df_metas_all["__YM__"] == ref_ym].copy()
+else:
+    metas_ref = pd.DataFrame()
+
+if not metas_ref.empty:
+    metas_cols = [c for c in ["VISTORIADOR","UNIDADE","TIPO","META_MENSAL","DIAS_UTEIS"] if c in metas_ref.columns]
+    grp = grp.merge(metas_ref[metas_cols], on="VISTORIADOR", how="left")
+else:
+    grp["UNIDADE"] = ""
+    grp["TIPO"] = ""
+    grp["META_MENSAL"] = 0
+    grp["DIAS_UTEIS"]  = 0
+
+for c in ["META_MENSAL","DIAS_UTEIS"]:
+    grp[c] = pd.to_numeric(grp.get(c,0), errors="coerce").fillna(0)
+
+grp["META_MENSAL"] = grp["META_MENSAL"].astype(int)
+grp["DIAS_UTEIS"]  = grp["DIAS_UTEIS"].astype(int)
+
+# cálculos
+grp["META_DIA"] = np.where(grp["DIAS_UTEIS"]>0, grp["META_MENSAL"]/grp["DIAS_UTEIS"], 0.0)
+grp["FALTANTE_MES"] = np.maximum(grp["META_MENSAL"] - grp["LIQUIDO"], 0)
+grp["DIAS_RESTANTES"] = np.maximum(grp["DIAS_UTEIS"] - grp["DIAS_PASSADOS"], 0)
+grp["NECESSIDADE_DIA"] = np.where(grp["DIAS_RESTANTES"]>0, grp["FALTANTE_MES"]/grp["DIAS_RESTANTES"], 0.0)
+grp["MEDIA_DIA_ATUAL"] = np.where(grp["DIAS_PASSADOS"]>0, grp["LIQUIDO"]/grp["DIAS_PASSADOS"], 0.0)
+grp["PROJECAO_MES"] = (grp["LIQUIDO"] + grp["MEDIA_DIA_ATUAL"] * grp["DIAS_RESTANTES"]).round(0)
+grp["TENDENCIA_%"] = np.where(grp["META_MENSAL"]>0, (grp["PROJECAO_MES"]/grp["META_MENSAL"])*100, np.nan)
+
+# normalização tipo + filtro só para tabela
+grp["TIPO_NORM"] = grp.get("TIPO","").astype(str).str.upper().str.replace("MOVEL","MÓVEL").str.strip()
+grp.loc[grp["TIPO_NORM"]=="", "TIPO_NORM"] = "—"
+
+tipo_options = [t for t in ["FIXO","MÓVEL"] if t in grp["TIPO_NORM"].unique().tolist()]
+if "—" in grp["TIPO_NORM"].unique():
+    tipo_options.append("—")
+
+sel_tipos = st.multiselect(
+    "Tipo (filtro apenas desta tabela)",
+    options=tipo_options,
+    default=tipo_options,
+    key="resumo_tipo_filter"
+)
+grp_tbl = grp if not sel_tipos else grp[grp["TIPO_NORM"].isin(sel_tipos)]
+
+# ordenação e formatação
+grp_tbl = grp_tbl.sort_values(["PROJECAO_MES","LIQUIDO"], ascending=[False, False])
+fmt = grp_tbl.copy()
+
+def chip_tend(p):
+    if pd.isna(p): return "—"
+    p = float(p)
+    if p >= 100: return f"{p:.0f}% 🚀"
+    if p >= 95:  return f"{p:.0f}% 💪"
+    if p >= 85:  return f"{p:.0f}% 😬"
+    return f"{p:.0f}% 😟"
+
+def chip_nec(x):
+    try:
+        v = float(x)
+    except:
+        return "—"
+    return "0 ✅" if v <= 0 else f"{int(round(v))} 🔥"
+
+fmt["TIPO"] = fmt["TIPO_NORM"].map({"FIXO":"🏢 FIXO","MÓVEL":"🚗 MÓVEL"}).fillna("—")
+fmt["META_MENSAL"]      = fmt["META_MENSAL"].map(lambda x: f"{int(x):,}".replace(",", "."))
+fmt["DIAS_UTEIS"]       = fmt["DIAS_UTEIS"].map(lambda x: f"{int(x)}")
+fmt["META_DIA"]         = fmt["META_DIA"].map(lambda x: f"{x:,.1f}".replace(",", "X").replace(".", ",").replace("X","."))
+fmt["VISTORIAS"]        = fmt["VISTORIAS"].map(lambda x: f"{int(x)}")
+fmt["REVISTORIAS"]      = fmt["REVISTORIAS"].map(lambda x: f"{int(x)}")
+fmt["LIQUIDO"]          = fmt["LIQUIDO"].map(lambda x: f"{int(x)}")
+fmt["FALTANTE_MES"]     = fmt["FALTANTE_MES"].map(lambda x: f"{int(x)}")
+fmt["NECESSIDADE_DIA"]  = fmt["NECESSIDADE_DIA"].apply(chip_nec)
+fmt["TENDÊNCIA"]        = fmt["TENDENCIA_%"].apply(chip_tend)
+fmt["PROJECAO_MES"]     = fmt["PROJECAO_MES"].map(lambda x: "—" if pd.isna(x) else f"{int(round(x))}")
+
+cols_show = [
+    "VISTORIADOR", "UNIDADE", "TIPO",
+    "META_MENSAL", "DIAS_UTEIS", "META_DIA",
+    "VISTORIAS", "REVISTORIAS", "LIQUIDO",
+    "FALTANTE_MES", "NECESSIDADE_DIA", "TENDÊNCIA", "PROJECAO_MES"
+]
+cols_show_avail = [c for c in cols_show if c in fmt.columns]
+
+if fmt.empty or not cols_show_avail:
+    st.caption("Sem registros para os filtros aplicados.")
+else:
+    st.dataframe(fmt[cols_show_avail], use_container_width=True, hide_index=True)
+    csv = fmt[cols_show_avail].to_csv(index=False).encode("utf-8-sig")
+    st.download_button("Baixar resumo (CSV)", data=csv, file_name="resumo_vistoriador.csv", mime="text/csv")
 
 # ------------------ HISTÓRICO VISUAL (MODELO QUALIDADE) ------------------
 st.markdown("---")
@@ -592,4 +709,5 @@ if not fast_mode:
     if det_cols:
         det2 = det[det_cols].copy().sort_values(["__DATA__", "UNIDADE", "VISTORIADOR"], kind="mergesort")
         st.dataframe(det2, use_container_width=True, hide_index=True)
+
 
