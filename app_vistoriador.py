@@ -162,6 +162,9 @@ def _fmt_mes(ym: str) -> str:
 def _is_workday(d):
     return isinstance(d, date) and d.weekday() < 5
 
+def _nt(x):
+    return x
+
 
 # ------------------ LEITURA DO ÍNDICE ------------------
 @st.cache_data(ttl=300, show_spinner=False)
@@ -971,7 +974,7 @@ else:
         ("% Ating. (sobre geral)", chip_pct(ating_g)),
     ]
     st.markdown(
-        '<div class="card-container">' +
+        '<div class="card-wrap">' +
         "".join([f"<div class='card'><h4>{t}</h4><h2>{v}</h2></div>" for t, v in cards_mes]) +
         "</div>",
         unsafe_allow_html=True
@@ -1148,6 +1151,7 @@ else:
 
     st.markdown("#### MÓVEL")
     render_ranking_dia(base_dia[base_dia["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
+
 
 
 
