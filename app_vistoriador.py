@@ -18,6 +18,7 @@ from typing import Optional, Tuple, Dict, List
 import streamlit as st
 import pandas as pd
 import numpy as np
+import altair as alt
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -862,7 +863,7 @@ st.markdown("<div class='section-title'>Chassis com múltiplas vistorias</div>",
 if view.empty:
     st.caption("Nenhum chassi com múltiplas vistorias dentro dos filtros.")
 else:
-    dup = (view.groupby(col_chassi, dropna=False)
+    dup = (view.groupby(col_chas, dropna=False)
                 .agg(QTD=("VISTORIADOR","size"),
                      PRIMEIRA_DATA=("__DATA__", "min"),
                      ULTIMA_DATA=("__DATA__", "max"))
@@ -872,13 +873,13 @@ else:
         st.caption("Nenhum chassi com múltiplas vistorias dentro dos filtros.")
     else:
         first_map = (view.sort_values(["__DATA__"])
-                        .drop_duplicates(subset=[col_chassi], keep="first")
-                        .set_index(col_chassi)["VISTORIADOR"].to_dict())
+                        .drop_duplicates(subset=[col_chas], keep="first")
+                        .set_index(col_chas)["VISTORIADOR"].to_dict())
         last_map = (view.sort_values(["__DATA__"])
-                        .drop_duplicates(subset=[col_chassi], keep="last")
-                        .set_index(col_chassi)["VISTORIADOR"].to_dict())
-        dup["PRIMEIRO_VIST"] = dup[col_chassi].map(first_map)
-        dup["ULTIMO_VIST"]   = dup[col_chassi].map(last_map)
+                        .drop_duplicates(subset=[col_chas], keep="last")
+                        .set_index(col_chas)["VISTORIADOR"].to_dict())
+        dup["PRIMEIRO_VIST"] = dup[col_chas].map(first_map)
+        dup["ULTIMO_VIST"]   = dup[col_chas].map(last_map)
         st.dataframe(dup, use_container_width=True, hide_index=True)
 
 
@@ -906,8 +907,8 @@ else:
     prod_mes["LIQUIDO"] = prod_mes["VISTORIAS"] - prod_mes["REVISTORIAS"]
 
     metas_join = (
-        df_metas_all[df_metas_all["__YM__"] == f"{ref_ano}-{ref_mes:02d}"][["VISTORIADOR","TIPO","META_MENSAL"]].copy()
-        if not df_metas_all.empty and "__YM__" in df_metas_all.columns
+        dfMetas[dfMetas["YM"] == f"{ref_ano}-{ref_mes:02d}"][["VISTORIADOR","TIPO","META_MENSAL"]].copy()
+        if not dfMetas.empty and "YM" in dfMetas.columns
         else pd.DataFrame(columns=["VISTORIADOR","TIPO","META_MENSAL"])
     )
 
@@ -1047,8 +1048,8 @@ else:
 
     ym_day = f"{used_day.year}-{used_day.month:02d}"
     metas_join = (
-        df_metas_all[df_metas_all["__YM__"] == ym_day][["VISTORIADOR","TIPO","META_MENSAL","DIAS_UTEIS"]].copy()
-        if not df_metas_all.empty and "__YM__" in df_metas_all.columns
+        dfMetas[dfMetas["YM"] == ym_day][["VISTORIADOR","TIPO","META_MENSAL","DIAS_UTEIS"]].copy()
+        if not dfMetas.empty and "YM" in dfMetas.columns
         else pd.DataFrame(columns=["VISTORIADOR","TIPO","META_MENSAL","DIAS_UTEIS"])
     )
 
@@ -1118,3 +1119,4 @@ else:
 
     st.markdown("#### MÓVEL")
     render_ranking_dia(base_dia[base_dia["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
+
