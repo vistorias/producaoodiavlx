@@ -83,7 +83,7 @@ client = make_client()
 
 
 # ------------------ SECRETS: IDs ------------------
-PROD_INDEX_ID = st.secrets.get("prod_index_sheet_id", "").strip()
+PROD_INDEX_ID = st.secrets.get("velox_index_sheet_id", "").strip()
 if not PROD_INDEX_ID:
     st.error("Faltou `prod_index_sheet_id` no secrets.toml")
     st.stop()
@@ -592,3 +592,4 @@ if not fast_mode:
     if det_cols:
         det2 = det[det_cols].copy().sort_values(["__DATA__", "UNIDADE", "VISTORIADOR"], kind="mergesort")
         st.dataframe(det2, use_container_width=True, hide_index=True)
+
