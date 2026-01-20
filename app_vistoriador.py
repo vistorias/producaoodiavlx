@@ -860,27 +860,49 @@ else:
 # Auditoria – Chassis com múltiplas vistorias
 # =========================
 st.markdown("<div class='section-title'>Chassis com múltiplas vistorias</div>", unsafe_allow_html=True)
+
 if view.empty:
     st.caption("Nenhum chassi com múltiplas vistorias dentro dos filtros.")
 else:
-    dup = (view.groupby(col_chas, dropna=False)
-                .agg(QTD=("VISTORIADOR","size"),
-                     PRIMEIRA_DATA=("__DATA__", "min"),
-                     ULTIMA_DATA=("__DATA__", "max"))
-                .reset_index())
-    dup = dup[dup["QTD"] >= 2].sort_values("QTD", ascending=False)
-    if len(dup) == 0:
-        st.caption("Nenhum chassi com múltiplas vistorias dentro dos filtros.")
+    # Descobre qual coluna é o CHASSI dentro do dataframe "view"
+    col_chas_view = _find_col(list(view.columns), "CHASSI")
+
+    if not col_chas_view:
+        st.caption("Não encontrei a coluna CHASSI no recorte atual para montar a auditoria.")
     else:
-        first_map = (view.sort_values(["__DATA__"])
-                        .drop_duplicates(subset=[col_chas], keep="first")
-                        .set_index(col_chas)["VISTORIADOR"].to_dict())
-        last_map = (view.sort_values(["__DATA__"])
-                        .drop_duplicates(subset=[col_chas], keep="last")
-                        .set_index(col_chas)["VISTORIADOR"].to_dict())
-        dup["PRIMEIRO_VIST"] = dup[col_chas].map(first_map)
-        dup["ULTIMO_VIST"]   = dup[col_chas].map(last_map)
-        st.dataframe(dup, use_container_width=True, hide_index=True)
+        dup = (
+            view.groupby(col_chas_view, dropna=False)
+                .agg(
+                    QTD=("VISTORIADOR", "size"),
+                    PRIMEIRA_DATA=("__DATA__", "min"),
+                    ULTIMA_DATA=("__DATA__", "max"),
+                )
+                .reset_index()
+        )
+
+        dup = dup[dup["QTD"] >= 2].sort_values("QTD", ascending=False)
+
+        if dup.empty:
+            st.caption("Nenhum chassi com múltiplas vistorias dentro dos filtros.")
+        else:
+            first_map = (
+                view.sort_values(["__DATA__"])
+                    .drop_duplicates(subset=[col_chas_view], keep="first")
+                    .set_index(col_chas_view)["VISTORIADOR"]
+                    .to_dict()
+            )
+
+            last_map = (
+                view.sort_values(["__DATA__"])
+                    .drop_duplicates(subset=[col_chas_view], keep="last")
+                    .set_index(col_chas_view)["VISTORIADOR"]
+                    .to_dict()
+            )
+
+            dup["PRIMEIRO_VIST"] = dup[col_chas_view].map(first_map)
+            dup["ULTIMO_VIST"]   = dup[col_chas_view].map(last_map)
+
+            st.dataframe(dup, use_container_width=True, hide_index=True)
 
 
 # =========================
@@ -1119,4 +1141,5 @@ else:
 
     st.markdown("#### MÓVEL")
     render_ranking_dia(base_dia[base_dia["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
+
 
