@@ -3,16 +3,15 @@
 # Painel de Produção por Vistoriador (Streamlit) - MULTI-MESES (VELOX VISTORIAS)
 # - Lê automaticamente os arquivos listados na planilha-índice (secrets.velox_index_sheet_id)
 # - Junta dados de todos os meses e lê METAS por mês
-# - KPIs, Resumo (com filtro FIXO/MÓVEL só aqui), Gráficos, Auditoria,
-#   Rankings Mensal e do Dia
+# - KPIs, Resumo, Gráficos, Auditoria, Rankings
 #
-# AJUSTE PRINCIPAL:
-# - Removeu o "silencioso" que retornava [] imediatamente (except: return [])
-# - Agora o app "espera" (spinner) e mostra o erro real: acesso/aba/colunas
-# - Aceita URL/LINK, e ATIVO com variações
+# NOVA VISUALIZAÇÃO (ADICIONADA):
+# - "Histórico de Meta (quem não bateu no mês selecionado)"
+#   Mostra há quantos meses consecutivos o colaborador está sem bater a meta,
+#   além de um resumo dos últimos meses e um detalhamento por vistoriador.
 # ------------------------------------------------------------
 
-import os, re, json, time
+import os, re, json
 from datetime import datetime, date
 from typing import Tuple, List, Optional
 
@@ -147,13 +146,25 @@ def infer_year_month_from_sheet(sh_title: str, df_data: pd.DataFrame) -> Optiona
                 pass
     return None
 
+def ym_to_label(ym: str) -> str:
+    # "2026-01" -> "01/2026"
+    if not ym or len(ym) != 7 or ym[4] != "-":
+        return "—"
+    return f"{ym[5:7]}/{ym[0:4]}"
+
+def ym_key(ym: str) -> int:
+    # "2026-01" -> 202601
+    try:
+        return int(ym.replace("-", ""))
+    except:
+        return -1
+
 
 # =========================
 # Lê UMA planilha de mês (dados + METAS) e devolve AAAA-MM
 # =========================
 @st.cache_data(show_spinner=False, ttl=300)
 def read_one_sheet_cached(sheet_id: str) -> Tuple[pd.DataFrame, pd.DataFrame, str]:
-    # cache precisa ser dentro de função sem client; cria client aqui
     gs_client = make_client()
     return read_one_sheet(gs_client, sheet_id)
 
@@ -241,7 +252,7 @@ def read_one_sheet(gs_client, sheet_id: str) -> Tuple[pd.DataFrame, pd.DataFrame
 
 
 # =========================
-# Leitura da PLANILHA-ÍNDICE (AGORA COM ERRO REAL)
+# Leitura da PLANILHA-ÍNDICE
 # =========================
 def _yes(v) -> bool:
     return str(v).strip().upper() in {"S", "SIM", "TRUE", "T", "1", "Y", "YES"}
@@ -250,14 +261,11 @@ def _yes(v) -> bool:
 def load_ids_from_index_cached(index_sheet_id: str, tab_name: str) -> List[str]:
     gs_client = make_client()
 
-    # 1) abre a planilha-índice
     sh = gs_client.open_by_key(index_sheet_id)
 
-    # 2) abre a aba (com fallback simples)
     try:
         ws = sh.worksheet(tab_name)
     except Exception:
-        # tenta fallback por variação de nome
         tabs = [w.title for w in sh.worksheets()]
         alts = [t for t in tabs if t.strip().upper() == tab_name.strip().upper()]
         if alts:
@@ -269,7 +277,6 @@ def load_ids_from_index_cached(index_sheet_id: str, tab_name: str) -> List[str]:
     if not rows:
         return []
 
-    # normaliza chaves
     norm = []
     for r in rows:
         rr = {}
@@ -277,7 +284,6 @@ def load_ids_from_index_cached(index_sheet_id: str, tab_name: str) -> List[str]:
             rr[str(k).strip().upper()] = r[k]
         norm.append(rr)
 
-    # aceita variações de coluna
     def pick_url(row: dict) -> str:
         for key in ["URL", "LINK", "PLANILHA", "ARQUIVO"]:
             if key in row and str(row.get(key) or "").strip():
@@ -302,7 +308,7 @@ def load_ids_from_index_cached(index_sheet_id: str, tab_name: str) -> List[str]:
 
 
 # =========================
-# Entrada – múltiplas planilhas (sempre via índice)
+# Entrada – múltiplas planilhas (via índice)
 # =========================
 with st.spinner("Conectando ao Google Sheets e lendo a planilha-índice..."):
     try:
@@ -313,13 +319,12 @@ with st.spinner("Conectando ao Google Sheets e lendo a planilha-índice..."):
             st.exception(e)
         st.stop()
 
-    # Mostra o e-mail da conta de serviço (para você conferir compartilhamento)
     st.caption(f"Conta de serviço: {SERVICE_EMAIL}")
 
     try:
         sheet_ids: List[str] = load_ids_from_index_cached(INDEX_SHEET_ID, INDEX_TAB_NAME)
     except Exception as e:
-        st.error("Não consegui ler a planilha-índice. Motivo provável: falta de compartilhamento com a conta de serviço, aba inexistente, ou permissão.")
+        st.error("Não consegui ler a planilha-índice. Motivo provável: falta de compartilhamento, aba inexistente, ou permissão.")
         with st.expander("Detalhes"):
             st.exception(e)
         st.stop()
@@ -420,7 +425,7 @@ if not datas_validas:
     st.stop()
 
 ser_datas = pd.Series(datas_validas)
-ym_all = sorted(ser_datas.map(lambda d: f"{d.year}-{d.month:02d}").unique().tolist())
+ym_all = sorted(ser_datas.map(lambda d: f"{d.year}-{d.month:02d}").unique().tolist(), key=ym_key)
 label_map = {f"{m[5:]}/{m[:4]}": m for m in ym_all}
 
 sel_label = st.selectbox(
@@ -459,7 +464,7 @@ with colV2:
 
 
 # =========================
-# Aplicar filtros globais
+# Aplicar filtros globais (VISUALIZAÇÕES DO MÊS)
 # =========================
 view = df.copy()
 
@@ -537,11 +542,7 @@ grp = grp.merge(wd_passados, on="VISTORIADOR", how="left").fillna({"DIAS_PASSADO
 grp["DIAS_PASSADOS"] = grp["DIAS_PASSADOS"].astype(int)
 
 # METAS (mês ref dentro do filtro)
-if not view.empty:
-    ref = max([d for d in view["__DATA__"] if isinstance(d, date)])
-    ref_ym = f"{ref.year}-{ref.month:02d}"
-else:
-    ref_ym = None
+ref_ym = ym_sel
 
 if ref_ym and not df_metas_all.empty:
     metas_ref = df_metas_all[df_metas_all["__YM__"] == ref_ym].copy()
@@ -595,19 +596,19 @@ fmt = grp_tbl.copy()
 def chip_tend(p):
     if pd.isna(p): return "—"
     p = float(p)
-    if p >= 100: return f"{p:.0f}% 🚀"
-    if p >= 95:  return f"{p:.0f}% 💪"
-    if p >= 85:  return f"{p:.0f}% 😬"
-    return f"{p:.0f}% 😟"
+    if p >= 100: return f"{p:.0f}%"
+    if p >= 95:  return f"{p:.0f}%"
+    if p >= 85:  return f"{p:.0f}%"
+    return f"{p:.0f}%"
 
 def chip_nec(x):
     try:
         v = float(x)
     except:
         return "—"
-    return "0 ✅" if v <= 0 else f"{int(round(v))} 🔥"
+    return "0" if v <= 0 else f"{int(round(v))}"
 
-fmt["TIPO"] = fmt["TIPO_NORM"].map({"FIXO":"🏢 FIXO","MÓVEL":"🚗 MÓVEL"}).fillna("—")
+fmt["TIPO"] = fmt["TIPO_NORM"].map({"FIXO":"FIXO","MÓVEL":"MÓVEL"}).fillna("—")
 fmt["META_MENSAL"]      = fmt["META_MENSAL"].map(lambda x: f"{int(x):,}".replace(",", "."))
 fmt["DIAS_UTEIS"]       = fmt["DIAS_UTEIS"].map(lambda x: f"{int(x)}")
 fmt["META_DIA"]         = fmt["META_DIA"].map(lambda x: f"{x:,.1f}".replace(",", "X").replace(".", ",").replace("X","."))
@@ -633,6 +634,160 @@ else:
     st.dataframe(fmt[cols_show_avail], use_container_width=True, hide_index=True)
     csv = fmt[cols_show_avail].to_csv(index=False).encode("utf-8-sig")
     st.download_button("Baixar resumo (CSV)", data=csv, file_name="resumo_vistoriador.csv", mime="text/csv")
+
+
+# =========================
+# NOVA VISUALIZAÇÃO: HISTÓRICO DE META (STREAK)
+# =========================
+st.markdown("<div class='section-title'>Histórico de Meta (quem não bateu no mês selecionado)</div>", unsafe_allow_html=True)
+
+# Base histórica respeitando Unidades + Vistoriadores (mas NÃO limita ao período do mês)
+hist = df.copy()
+if st.session_state.unids_tmp:
+    hist = hist[hist[col_unid].isin(st.session_state.unids_tmp)]
+if st.session_state.vists_tmp:
+    hist = hist[hist["VISTORIADOR"].isin(st.session_state.vists_tmp)]
+
+# Garante __YM__
+if "__YM__" not in hist.columns or hist["__YM__"].isna().all():
+    hist["__YM__"] = hist["__DATA__"].apply(lambda d: f"{d.year}-{d.month:02d}" if isinstance(d, date) else None)
+
+hist = hist[pd.notna(hist["__YM__"])].copy()
+
+if hist.empty:
+    st.caption("Sem base histórica para calcular o histórico de metas.")
+else:
+    # produção mensal
+    prod_m = (hist.groupby(["__YM__", "VISTORIADOR"], dropna=False)
+              .agg(VISTORIAS=("IS_REV", "size"), REVISTORIAS=("IS_REV", "sum"))
+              .reset_index())
+    prod_m["LIQUIDO"] = prod_m["VISTORIAS"] - prod_m["REVISTORIAS"]
+
+    # metas mensais (por vistoriador e mês)
+    if df_metas_all.empty:
+        metas_m = pd.DataFrame(columns=["__YM__", "VISTORIADOR", "TIPO", "META_MENSAL"])
+    else:
+        metas_m = df_metas_all.copy()
+        metas_m["VISTORIADOR"] = metas_m.get("VISTORIADOR", "").astype(str).map(_upper_strip)
+        metas_m["__YM__"] = metas_m.get("__YM__", "").astype(str)
+        keep = [c for c in ["__YM__", "VISTORIADOR", "TIPO", "META_MENSAL"] if c in metas_m.columns]
+        metas_m = metas_m[keep].copy()
+        metas_m["META_MENSAL"] = pd.to_numeric(metas_m.get("META_MENSAL", 0), errors="coerce").fillna(0).astype(int)
+        metas_m["TIPO"] = metas_m.get("TIPO", "").astype(str).map(_upper_strip).replace({"MOVEL":"MÓVEL"})
+        metas_m = metas_m.drop_duplicates(subset=["__YM__", "VISTORIADOR"], keep="last")
+
+    base_hist = prod_m.merge(metas_m, on=["__YM__", "VISTORIADOR"], how="left")
+    base_hist["META_MENSAL"] = pd.to_numeric(base_hist.get("META_MENSAL", 0), errors="coerce").fillna(0).astype(int)
+    base_hist["TIPO"] = base_hist.get("TIPO", "").astype(str).replace("", "—")
+    base_hist["ATINGIU"] = np.where(base_hist["META_MENSAL"] > 0, base_hist["LIQUIDO"] >= base_hist["META_MENSAL"], np.nan)
+    base_hist["ATINGIU_TXT"] = np.where(base_hist["META_MENSAL"] > 0, np.where(base_hist["ATINGIU"], "SIM", "NÃO"), "SEM META")
+
+    # limita até o mês selecionado
+    base_hist = base_hist[base_hist["__YM__"].apply(lambda x: ym_key(x) <= ym_key(ym_sel))].copy()
+
+    # quem não bateu no mês selecionado (considerando o mês cheio)
+    mes_ref = base_hist[base_hist["__YM__"] == ym_sel].copy()
+    mes_ref = mes_ref[mes_ref["META_MENSAL"] > 0].copy()
+
+    if mes_ref.empty:
+        st.caption(f"Sem metas cadastradas (ou sem produção) para {ym_to_label(ym_sel)}.")
+    else:
+        mes_ref["NAO_BATEU"] = mes_ref["LIQUIDO"] < mes_ref["META_MENSAL"]
+        alvo = mes_ref[mes_ref["NAO_BATEU"]].copy()
+
+        if alvo.empty:
+            st.caption(f"Ninguém ficou abaixo da meta em {ym_to_label(ym_sel)} (considerando LIQUIDO vs META).")
+        else:
+            # cálculo do streak (meses consecutivos sem bater meta, terminando em ym_sel)
+            def calc_streak_for(vist: str) -> Tuple[int, Optional[str]]:
+                sub = base_hist[(base_hist["VISTORIADOR"] == vist) & (base_hist["META_MENSAL"] > 0)].copy()
+                if sub.empty:
+                    return 0, None
+                sub = sub.sort_values("__YM__", key=lambda s: s.map(ym_key))
+                sub = sub[sub["__YM__"].apply(lambda x: ym_key(x) <= ym_key(ym_sel))].copy()
+                if sub.empty:
+                    return 0, None
+                # precisa estar abaixo no mês selecionado para contar
+                if not ((sub["__YM__"] == ym_sel) & (sub["LIQUIDO"] < sub["META_MENSAL"])).any():
+                    return 0, None
+                # percorre de trás para frente enquanto não bateu
+                sub_rev = sub.sort_values("__YM__", key=lambda s: s.map(ym_key), ascending=False).copy()
+                streak = 0
+                inicio = None
+                for _, r in sub_rev.iterrows():
+                    if r["__YM__"] == ym_sel or streak > 0:
+                        if r["LIQUIDO"] < r["META_MENSAL"]:
+                            streak += 1
+                            inicio = r["__YM__"]
+                            continue
+                        else:
+                            break
+                return int(streak), inicio
+
+            rows = []
+            for _, r in alvo.iterrows():
+                vist = r["VISTORIADOR"]
+                streak, inicio = calc_streak_for(vist)
+
+                # últimos 6 meses (com meta) para contexto
+                sub6 = base_hist[(base_hist["VISTORIADOR"] == vist) & (base_hist["META_MENSAL"] > 0)].copy()
+                sub6 = sub6.sort_values("__YM__", key=lambda s: s.map(ym_key), ascending=False).head(6)
+                sub6 = sub6.sort_values("__YM__", key=lambda s: s.map(ym_key))
+
+                ult = []
+                for _, rr in sub6.iterrows():
+                    ult.append(f"{ym_to_label(rr['__YM__'])}: {int(rr['LIQUIDO'])}/{int(rr['META_MENSAL'])} ({rr['ATINGIU_TXT']})")
+                ult_txt = " | ".join(ult) if ult else "—"
+
+                rows.append({
+                    "VISTORIADOR": vist,
+                    "TIPO": str(r.get("TIPO", "—") or "—"),
+                    "META_MENSAL": int(r["META_MENSAL"]),
+                    "LIQUIDO": int(r["LIQUIDO"]),
+                    "FALTANTE": int(max(r["META_MENSAL"] - r["LIQUIDO"], 0)),
+                    "MESES_CONSECUTIVOS_SEM_META": streak,
+                    "INICIO_DA_SEQUENCIA": ym_to_label(inicio) if inicio else "—",
+                    "ULTIMOS_MESES (liq/meta)": ult_txt
+                })
+
+            hist_tbl = pd.DataFrame(rows)
+            hist_tbl = hist_tbl.sort_values(
+                ["MESES_CONSECUTIVOS_SEM_META", "FALTANTE"],
+                ascending=[False, False]
+            )
+
+            st.dataframe(hist_tbl, use_container_width=True, hide_index=True)
+
+            st.download_button(
+                "Baixar histórico (CSV)",
+                data=hist_tbl.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"historico_metas_{ym_sel}.csv",
+                mime="text/csv"
+            )
+
+            st.markdown("#### Detalhar um vistoriador (histórico mensal)")
+            v_choices = hist_tbl["VISTORIADOR"].unique().tolist()
+            v_sel = st.selectbox("Vistoriador", options=v_choices, index=0, key="hist_vist_sel")
+
+            subd = base_hist[(base_hist["VISTORIADOR"] == v_sel) & (base_hist["META_MENSAL"] > 0)].copy()
+            subd = subd.sort_values("__YM__", key=lambda s: s.map(ym_key))
+            subd["MES"] = subd["__YM__"].map(ym_to_label)
+            subd["FALTANTE"] = np.maximum(subd["META_MENSAL"] - subd["LIQUIDO"], 0).astype(int)
+            subd["STATUS"] = np.where(subd["LIQUIDO"] >= subd["META_MENSAL"], "BATEU", "NÃO BATEU")
+
+            # streak acumulado (para enxergar a sequência mês a mês)
+            streak_run = []
+            cur = 0
+            for _, rr in subd.iterrows():
+                if rr["STATUS"] == "NÃO BATEU":
+                    cur += 1
+                else:
+                    cur = 0
+                streak_run.append(cur)
+            subd["MESES_SEGUIDOS_SEM_BATER (até o mês)"] = streak_run
+
+            show_cols = ["MES", "LIQUIDO", "META_MENSAL", "FALTANTE", "STATUS", "MESES_SEGUIDOS_SEM_BATER (até o mês)"]
+            st.dataframe(subd[show_cols], use_container_width=True, hide_index=True)
 
 
 # =========================
@@ -761,12 +916,7 @@ else:
     def chip_pct(p):
         if pd.isna(p): return "—"
         p = float(p)
-        if p >= 110: emo = "🏆"
-        elif p >= 100: emo = "🚀"
-        elif p >= 90: emo = "💪"
-        elif p >= 80: emo = "😬"
-        else: emo = "😟"
-        return f"{p:.0f}% {emo}"
+        return f"{p:.0f}%"
 
     cards_mes = [
         ("Mês de referência", mes_label),
@@ -786,12 +936,7 @@ else:
     def chip_pct_row(p):
         if pd.isna(p): return "—"
         p = float(p)
-        if p >= 110: emo = "🏆"
-        elif p >= 100: emo = "🚀"
-        elif p >= 90: emo = "💪"
-        elif p >= 80: emo = "😬"
-        else: emo = "😟"
-        return f"{p:.0f}% {emo}"
+        return f"{p:.0f}%"
 
     def render_ranking(df_sub, titulo):
         if len(df_sub) == 0:
@@ -804,10 +949,7 @@ else:
         rk = rk.sort_values("ATING_%", ascending=False)
 
         top = rk.head(5).copy()
-        medals = ["🥇","🥈","🥉","🏅","🏅"]
-        top["🏅"] = [medals[i] if i < len(medals) else "🏅" for i in range(len(top))]
         top_fmt = pd.DataFrame({
-            " ": top["🏅"],
             "Vistoriador": top["VISTORIADOR"],
             "Meta (mês)": top["META_MENSAL"].map(lambda x: f"{int(x):,}".replace(",", ".")),
             "Vistorias (geral)": top["VISTORIAS"].map(int),
@@ -817,10 +959,7 @@ else:
         })
 
         bot = rk.tail(5).sort_values("ATING_%", ascending=True).copy()
-        badgies = ["🆘","🪫","🐢","⚠️","⚠️"]
-        bot["⚠️"] = [badgies[i] if i < len(badgies) else "⚠️" for i in range(len(bot))]
         bot_fmt = pd.DataFrame({
-            " ": bot["⚠️"],
             "Vistoriador": bot["VISTORIADOR"],
             "Meta (mês)": bot["META_MENSAL"].map(lambda x: f"{int(x):,}".replace(",", ".")),
             "Vistorias (geral)": bot["VISTORIAS"].map(int),
@@ -895,12 +1034,7 @@ else:
     def chip_pct_row_dia(p):
         if pd.isna(p): return "—"
         p = float(p)
-        if p >= 110: emo = "🏆"
-        elif p >= 100: emo = "🚀"
-        elif p >= 90: emo = "💪"
-        elif p >= 80: emo = "😬"
-        else: emo = "😟"
-        return f"{p:.0f}% {emo}"
+        return f"{p:.0f}%"
 
     def render_ranking_dia(df_sub, titulo):
         if df_sub.empty:
@@ -914,10 +1048,8 @@ else:
         rk = rk.sort_values("ATING_DIA_%", ascending=False)
 
         top = rk.head(5).copy()
-        medals = ["🥇","🥈","🥉","🏅","🏅"]
-        top["🏅"] = [medals[i] if i < len(medals) else "🏅" for i in range(len(top))]
         top_fmt = pd.DataFrame({
-            " ": top["🏅"], "Vistoriador": top["VISTORIADOR"],
+            "Vistoriador": top["VISTORIADOR"],
             "Meta (dia)": top["META_DIA"].map(lambda x: int(round(x))),
             "Vistorias (dia)": top["VISTORIAS_DIA"].map(int),
             "Revistorias": top["REVISTORIAS_DIA"].map(int),
@@ -926,10 +1058,8 @@ else:
         })
 
         bot = rk.tail(5).sort_values("ATING_DIA_%", ascending=True).copy()
-        badgies = ["🆘","🪫","🐢","⚠️","⚠️"]
-        bot["⚠️"] = [badgies[i] if i < len(badgies) else "⚠️" for i in range(len(bot))]
         bot_fmt = pd.DataFrame({
-            " ": bot["⚠️"], "Vistoriador": bot["VISTORIADOR"],
+            "Vistoriador": bot["VISTORIADOR"],
             "Meta (dia)": bot["META_DIA"].map(lambda x: int(round(x))),
             "Vistorias (dia)": bot["VISTORIAS_DIA"].map(int),
             "Revistorias": bot["REVISTORIAS_DIA"].map(int),
