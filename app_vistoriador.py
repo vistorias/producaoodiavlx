@@ -2,6 +2,10 @@
 # ============================================================
 # Painel de Produção por Vistoriador — MULTI-MESES (modelo Qualidade)
 # (SEM googleapiclient / SEM Drive API)
+# Ajustes:
+# 1) Ler DIAS_UTEIS da aba METAS e exibir DIAS_UTEIS + NECESSIDADE_DIA corretamente
+# 2) Voltar filtros completos: Unidades + (botões selecionar/limpar), Mês, Período dentro do mês, Vistoriadores + (botões)
+# 3) Tendência/Projeção no RESUMO calculadas em cima do TOTAL BRUTO (VISTORIAS), como solicitado
 # ============================================================
 
 import os
@@ -154,6 +158,9 @@ def _fmt_int(x) -> str:
 def _fmt_mes(ym: str) -> str:
     return f"{ym[5:7]}/{ym[:4]}"
 
+def _is_workday(d):
+    return isinstance(d, date) and d.weekday() < 5
+
 
 # ------------------ LEITURA DO ÍNDICE ------------------
 @st.cache_data(ttl=300, show_spinner=False)
@@ -181,7 +188,7 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
     - IS_REV = 1 (rev) / 0 (principal)
     Metas:
     - Aba 'METAS' (se existir)
-    - VISTORIADOR, UNIDADE/CIDADE, META_MENSAL e opcional TIPO
+    - VISTORIADOR, UNIDADE/CIDADE, META_MENSAL, opcional TIPO e DIAS_UTEIS
     """
     sh = client.open_by_key(month_sheet_id)
     title = sh.title or month_sheet_id
@@ -231,7 +238,7 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
     df["__ORD__"] = df.groupby([col_unid, col_chas]).cumcount()
     df["IS_REV"] = (df["__ORD__"] >= 1).astype(int)
 
-    # metas
+    # metas (aba METAS)
     metas = pd.DataFrame()
     try:
         ws_meta = sh.worksheet("METAS")
@@ -244,12 +251,14 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
             c_unid = _find_col(cols, "UNIDADE", "CIDADE")
             c_meta = _find_col(cols, "META_MENSAL", "META MENSAL", "META")
             c_tipo = _find_col(cols, "TIPO", "PERFIL")
+            c_dias = _find_col(cols, "DIAS_UTEIS", "DIAS UTEIS", "DIAS ÚTEIS")
 
             out = pd.DataFrame()
             out["VISTORIADOR"] = dm[c_vist].astype(str).map(_upper) if c_vist else ""
             out["UNIDADE"] = dm[c_unid].astype(str).map(_upper) if c_unid else ""
             out["META_MENSAL"] = pd.to_numeric(dm[c_meta], errors="coerce").fillna(0).astype(int) if c_meta else 0
             out["TIPO"] = dm[c_tipo].astype(str).map(_upper) if c_tipo else ""
+            out["DIAS_UTEIS"] = pd.to_numeric(dm[c_dias], errors="coerce").fillna(0).astype(int) if c_dias else 0
             out["YM"] = ym or ""
             metas = out
     except Exception:
@@ -301,32 +310,102 @@ if not dp_all:
 
 dfP = pd.concat(dp_all, ignore_index=True)
 dfMetas = pd.concat(metas_all, ignore_index=True) if metas_all else pd.DataFrame(
-    columns=["VISTORIADOR", "UNIDADE", "META_MENSAL", "TIPO", "YM"]
+    columns=["VISTORIADOR", "UNIDADE", "META_MENSAL", "TIPO", "DIAS_UTEIS", "YM"]
 )
 
 ym_all = sorted(dfP["YM"].dropna().unique().tolist())
 label_map = {_fmt_mes(m): m for m in ym_all}
 
-sel_label = st.selectbox("Mês de referência", options=list(label_map.keys()), index=len(ym_all) - 1)
+
+# ------------------ FILTROS (layout completo) ------------------
+st.markdown('<div class="section">Filtros</div>', unsafe_allow_html=True)
+
+# Unidades (geral) - lista considerando mês selecionado depois, mas precisamos de um mês inicial para montar lista
+# então: mês como primeiro filtro
+sel_label = st.selectbox("Mês de referência", options=list(label_map.keys()), index=len(ym_all) - 1, key="f_mesref")
 ym_sel = label_map[sel_label]
 
-# ------------------ FILTROS (unidade / vistoriador) ------------------
-viewP_mes = dfP[dfP["YM"] == ym_sel].copy()
+viewP_mes_full = dfP[dfP["YM"] == ym_sel].copy()
 
-unids = sorted(viewP_mes["UNIDADE"].dropna().unique().tolist()) if "UNIDADE" in viewP_mes.columns else []
-vists = sorted(viewP_mes["VISTORIADOR"].dropna().unique().tolist()) if "VISTORIADOR" in viewP_mes.columns else []
+unids_all = sorted(viewP_mes_full["UNIDADE"].dropna().unique().tolist()) if "UNIDADE" in viewP_mes_full.columns else []
+vists_all = sorted(viewP_mes_full["VISTORIADOR"].dropna().unique().tolist()) if "VISTORIADOR" in viewP_mes_full.columns else []
 
-c1, c2 = st.columns(2)
-with c1:
-    f_unids = st.multiselect("Unidades (opcional)", options=unids, default=unids)
-with c2:
-    f_vists = st.multiselect("Vistoriadores (opcional)", options=vists, default=[])
+# ---- Unidades com botões selecionar/limpar ----
+cU1, cU2, cU3 = st.columns([6, 2, 2])
+with cU1:
+    f_unids = st.multiselect("Unidades", options=unids_all, default=unids_all, key="f_unids")
+with cU2:
+    if st.button("Selecionar todas (Unid.)", key="btn_unid_all"):
+        st.session_state["f_unids"] = unids_all
+        st.rerun()
+with cU3:
+    if st.button("Limpar (Unid.)", key="btn_unid_none"):
+        st.session_state["f_unids"] = []
+        st.rerun()
 
-if f_unids and "UNIDADE" in viewP_mes.columns:
-    viewP_mes = viewP_mes[viewP_mes["UNIDADE"].isin([_upper(u) for u in f_unids])].copy()
-if f_vists and "VISTORIADOR" in viewP_mes.columns:
-    viewP_mes = viewP_mes[viewP_mes["VISTORIADOR"].isin([_upper(v) for v in f_vists])].copy()
+# ---- Período dentro do mês (min/max data do recorte de unidades) ----
+# Primeiro aplica unidades para limitar range do período
+tmp_for_period = viewP_mes_full.copy()
+if "UNIDADE" in tmp_for_period.columns and st.session_state.get("f_unids") is not None:
+    if len(st.session_state["f_unids"]) > 0:
+        tmp_for_period = tmp_for_period[tmp_for_period["UNIDADE"].isin([_upper(u) for u in st.session_state["f_unids"]])].copy()
 
+dmin = tmp_for_period["__DATA__"].min() if "__DATA__" in tmp_for_period.columns and not tmp_for_period.empty else None
+dmax = tmp_for_period["__DATA__"].max() if "__DATA__" in tmp_for_period.columns and not tmp_for_period.empty else None
+
+if not isinstance(dmin, date) or not isinstance(dmax, date):
+    # fallback: mês todo (01 ao 28/30/31 não conhecido sem calendar aqui; usa dmin/dmax do próprio dataset)
+    period_default = (None, None)
+    st.caption("Período dentro do mês: sem datas suficientes para slider (verifique coluna DATA).")
+    start_d = None
+    end_d = None
+else:
+    period_default = (dmin, dmax)
+    start_d, end_d = st.slider(
+        "Período dentro do mês",
+        min_value=dmin,
+        max_value=dmax,
+        value=period_default,
+        format="DD/MM/YYYY",
+        key="f_periodo"
+    )
+
+# ---- Vistoriadores com botões selecionar/limpar ----
+cV1, cV2, cV3 = st.columns([6, 2, 2])
+with cV1:
+    f_vists = st.multiselect("Vistoriadores", options=vists_all, default=[], key="f_vists")
+with cV2:
+    if st.button("Selecionar todos", key="btn_vist_all"):
+        st.session_state["f_vists"] = vists_all
+        st.rerun()
+with cV3:
+    if st.button("Limpar", key="btn_vist_none"):
+        st.session_state["f_vists"] = []
+        st.rerun()
+
+
+# ------------------ APLICA FILTROS ------------------
+viewP_mes = viewP_mes_full.copy()
+
+# unidades
+if "UNIDADE" in viewP_mes.columns:
+    sel_u = st.session_state.get("f_unids", unids_all)
+    if sel_u is not None and len(sel_u) > 0:
+        viewP_mes = viewP_mes[viewP_mes["UNIDADE"].isin([_upper(u) for u in sel_u])].copy()
+    elif sel_u is not None and len(sel_u) == 0:
+        viewP_mes = viewP_mes.iloc[0:0].copy()
+
+# período
+if isinstance(start_d, date) and isinstance(end_d, date) and "__DATA__" in viewP_mes.columns and not viewP_mes.empty:
+    viewP_mes = viewP_mes[(viewP_mes["__DATA__"] >= start_d) & (viewP_mes["__DATA__"] <= end_d)].copy()
+
+# vistoriadores
+sel_v = st.session_state.get("f_vists", [])
+if sel_v and "VISTORIADOR" in viewP_mes.columns:
+    viewP_mes = viewP_mes[viewP_mes["VISTORIADOR"].isin([_upper(v) for v in sel_v])].copy()
+
+
+# ------------------ AGREGAÇÃO BASE ------------------
 def _make_prod(df_prod: pd.DataFrame) -> pd.DataFrame:
     if df_prod.empty:
         return pd.DataFrame(columns=["VISTORIADOR", "UNIDADE", "vist", "rev", "liq"])
@@ -344,18 +423,22 @@ metas_mes = dfMetas[dfMetas["YM"].astype(str) == ym_sel].copy() if "YM" in dfMet
 if not metas_mes.empty:
     metas_mes["VISTORIADOR"] = metas_mes["VISTORIADOR"].astype(str).map(_upper)
     metas_mes["UNIDADE"] = metas_mes["UNIDADE"].astype(str).map(_upper)
+    metas_mes["TIPO"] = metas_mes.get("TIPO","").fillna("").astype(str).map(_upper)
+    metas_mes["DIAS_UTEIS"] = pd.to_numeric(metas_mes.get("DIAS_UTEIS", 0), errors="coerce").fillna(0).astype(int)
 
 base_mes = prod_mes.merge(
-    metas_mes[["VISTORIADOR", "UNIDADE", "META_MENSAL", "TIPO"]] if not metas_mes.empty else
-    pd.DataFrame(columns=["VISTORIADOR", "UNIDADE", "META_MENSAL", "TIPO"]),
+    metas_mes[["VISTORIADOR", "UNIDADE", "META_MENSAL", "TIPO", "DIAS_UTEIS"]] if not metas_mes.empty else
+    pd.DataFrame(columns=["VISTORIADOR", "UNIDADE", "META_MENSAL", "TIPO", "DIAS_UTEIS"]),
     on=["VISTORIADOR", "UNIDADE"],
     how="left",
 )
 
 base_mes["META_MENSAL"] = pd.to_numeric(base_mes.get("META_MENSAL", 0), errors="coerce").fillna(0).astype(int)
+base_mes["DIAS_UTEIS"] = pd.to_numeric(base_mes.get("DIAS_UTEIS", 0), errors="coerce").fillna(0).astype(int)
 base_mes["FALTANTE"] = (base_mes["META_MENSAL"] - base_mes["liq"]).clip(lower=0).astype(int)
 base_mes["BATEU"] = base_mes["liq"] >= base_mes["META_MENSAL"]
 base_mes["TIPO"] = base_mes.get("TIPO", "").fillna("").astype(str).map(_upper)
+
 
 # ------------------ CARDS ------------------
 total_vist = int(prod_mes["vist"].sum()) if not prod_mes.empty else 0
@@ -379,11 +462,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ------------------ RESUMO (mês selecionado) ------------------
+
+# ------------------ RESUMO (mês selecionado) — MODELO ANTIGO (tendência no BRUTO) ------------------
 st.markdown('<div class="section">Resumo por Vistoriador</div>', unsafe_allow_html=True)
 
 view = viewP_mes.copy()
-col_unid = "UNIDADE"  # no seu padrão atual
+col_unid = "UNIDADE"
 
 if view.empty:
     st.caption("Sem registros para os filtros aplicados.")
@@ -399,9 +483,6 @@ else:
            .reset_index())
 
     grp["LIQUIDO"] = grp["VISTORIAS"] - grp["REVISTORIAS"]
-
-    def _is_workday(d):
-        return isinstance(d, date) and d.weekday() < 5
 
     def _calc_wd_passados(df_view: pd.DataFrame) -> pd.DataFrame:
         if df_view.empty or "__DATA__" not in df_view.columns or "VISTORIADOR" not in df_view.columns:
@@ -422,25 +503,24 @@ else:
     grp = grp.merge(wd_passados, on="VISTORIADOR", how="left").fillna({"DIAS_PASSADOS": 0})
     grp["DIAS_PASSADOS"] = grp["DIAS_PASSADOS"].astype(int)
 
-    # METAS do mês selecionado (YM já existe no dfMetas)
+    # METAS do mês selecionado
     metas_ref = dfMetas[dfMetas["YM"].astype(str) == ym_sel].copy() if not dfMetas.empty else pd.DataFrame()
 
     if not metas_ref.empty:
-        # se tiver mais de uma linha por vistoriador (ex: unidades), consolida por vistoriador
         metas_ref["META_MENSAL"] = pd.to_numeric(metas_ref.get("META_MENSAL", 0), errors="coerce").fillna(0)
+        metas_ref["DIAS_UTEIS"] = pd.to_numeric(metas_ref.get("DIAS_UTEIS", 0), errors="coerce").fillna(0)
         metas_ref = (metas_ref
                      .groupby("VISTORIADOR", dropna=False)
                      .agg(
                         UNIDADE=("UNIDADE", lambda s: s.dropna().iloc[0] if s.dropna().size else ""),
                         TIPO=("TIPO", lambda s: s.dropna().iloc[0] if s.dropna().size else ""),
                         META_MENSAL=("META_MENSAL", "sum"),
-                        DIAS_UTEIS=("DIAS_UTEIS", "max") if "DIAS_UTEIS" in metas_ref.columns else ("META_MENSAL", lambda s: 0),
+                        DIAS_UTEIS=("DIAS_UTEIS", "max"),
                      )
                      .reset_index())
     else:
         metas_ref = pd.DataFrame(columns=["VISTORIADOR", "UNIDADE", "TIPO", "META_MENSAL", "DIAS_UTEIS"])
 
-    # merge metas
     grp = grp.merge(metas_ref[["VISTORIADOR", "UNIDADE", "TIPO", "META_MENSAL", "DIAS_UTEIS"]],
                     on="VISTORIADOR", how="left")
 
@@ -452,9 +532,21 @@ else:
     # cálculos
     grp["META_DIA"] = np.where(grp["DIAS_UTEIS"] > 0, grp["META_MENSAL"] / grp["DIAS_UTEIS"], 0.0)
     grp["FALTANTE_MES"] = np.maximum(grp["META_MENSAL"] - grp["LIQUIDO"], 0)
+
     grp["DIAS_RESTANTES"] = np.maximum(grp["DIAS_UTEIS"] - grp["DIAS_PASSADOS"], 0)
-    grp["NECESSIDADE_DIA"] = np.where(grp["DIAS_RESTANTES"] > 0, grp["FALTANTE_MES"] / grp["DIAS_RESTANTES"], 0.0)
-    grp["MEDIA_DIA_ATUAL"] = np.where(grp["DIAS_PASSADOS"] > 0, grp["VISTORIAS"] / grp["DIAS_PASSADOS"], 0.0)
+
+    grp["NECESSIDADE_DIA"] = np.where(
+        grp["DIAS_RESTANTES"] > 0,
+        grp["FALTANTE_MES"] / grp["DIAS_RESTANTES"],
+        0.0
+    )
+
+    # tendência no BRUTO (VISTORIAS)
+    grp["MEDIA_DIA_ATUAL"] = np.where(
+        grp["DIAS_PASSADOS"] > 0,
+        grp["VISTORIAS"] / grp["DIAS_PASSADOS"],
+        0.0
+    )
     grp["PROJECAO_MES"] = (grp["VISTORIAS"] + grp["MEDIA_DIA_ATUAL"] * grp["DIAS_RESTANTES"]).round(0)
     grp["TENDENCIA_%"] = np.where(grp["META_MENSAL"] > 0, (grp["PROJECAO_MES"] / grp["META_MENSAL"]) * 100, np.nan)
 
@@ -519,6 +611,7 @@ else:
         st.dataframe(fmt[cols_show_avail], use_container_width=True, hide_index=True)
         csv = fmt[cols_show_avail].to_csv(index=False).encode("utf-8-sig")
         st.download_button("Baixar resumo (CSV)", data=csv, file_name="resumo_vistoriador.csv", mime="text/csv")
+
 
 # ------------------ HISTÓRICO VISUAL (MODELO QUALIDADE) ------------------
 st.markdown("---")
@@ -719,7 +812,3 @@ if not fast_mode:
     if det_cols:
         det2 = det[det_cols].copy().sort_values(["__DATA__", "UNIDADE", "VISTORIADOR"], kind="mergesort")
         st.dataframe(det2, use_container_width=True, hide_index=True)
-
-
-
-
