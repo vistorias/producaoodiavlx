@@ -454,8 +454,8 @@ else:
     grp["FALTANTE_MES"] = np.maximum(grp["META_MENSAL"] - grp["LIQUIDO"], 0)
     grp["DIAS_RESTANTES"] = np.maximum(grp["DIAS_UTEIS"] - grp["DIAS_PASSADOS"], 0)
     grp["NECESSIDADE_DIA"] = np.where(grp["DIAS_RESTANTES"] > 0, grp["FALTANTE_MES"] / grp["DIAS_RESTANTES"], 0.0)
-    grp["MEDIA_DIA_ATUAL"] = np.where(grp["DIAS_PASSADOS"] > 0, grp["LIQUIDO"] / grp["DIAS_PASSADOS"], 0.0)
-    grp["PROJECAO_MES"] = (grp["LIQUIDO"] + grp["MEDIA_DIA_ATUAL"] * grp["DIAS_RESTANTES"]).round(0)
+    grp["MEDIA_DIA_ATUAL"] = np.where(grp["DIAS_PASSADOS"] > 0, grp["VISTORIAS"] / grp["DIAS_PASSADOS"], 0.0)
+    grp["PROJECAO_MES"] = (grp["VISTORIAS"] + grp["MEDIA_DIA_ATUAL"] * grp["DIAS_RESTANTES"]).round(0)
     grp["TENDENCIA_%"] = np.where(grp["META_MENSAL"] > 0, (grp["PROJECAO_MES"] / grp["META_MENSAL"]) * 100, np.nan)
 
     # normalização tipo + filtro só para tabela
@@ -719,6 +719,7 @@ if not fast_mode:
     if det_cols:
         det2 = det[det_cols].copy().sort_values(["__DATA__", "UNIDADE", "VISTORIADOR"], kind="mergesort")
         st.dataframe(det2, use_container_width=True, hide_index=True)
+
 
 
 
