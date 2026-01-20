@@ -25,8 +25,8 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 
 # ------------------ CONFIG BÁSICA ------------------
-st.set_page_config(page_title="Painel de Produção por Vistoriador", layout="wide")
-st.title("Painel de Produção por Vistoriador")
+st.set_page_config(page_title="Painel de Produção por Vistoriador - Velox Vistoria", layout="wide")
+st.title("Painel de Produção por Vistoriador - Velox Vistoria")
 
 st.markdown(
     """
@@ -1151,6 +1151,7 @@ else:
 
     st.markdown("#### MÓVEL")
     render_ranking_dia(base_dia[base_dia["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
+
 
 
 
