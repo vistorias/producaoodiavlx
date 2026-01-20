@@ -935,7 +935,14 @@ else:
     )
 
     base_mes = prod_mes.merge(metas_join, on="VISTORIADOR", how="left")
-    base_mes["TIPO"] = base_mes["TIPO"].astype(str).map(_upper_strip).replace({"MOVEL":"MÓVEL"}).replace("", "—")
+    base_mes["TIPO"] = (
+    base_mes["TIPO"]
+    .fillna("")
+    .astype(str)
+    .map(_upper)                # já existe no seu código
+    .replace({"MOVEL": "MÓVEL"})
+    .replace("", "—")
+)
     base_mes["META_MENSAL"] = pd.to_numeric(base_mes["META_MENSAL"], errors="coerce").fillna(0)
     base_mes["ATING_%"] = np.where(base_mes["META_MENSAL"]>0, (base_mes["VISTORIAS"]/base_mes["META_MENSAL"])*100, np.nan)
 
@@ -1141,5 +1148,6 @@ else:
 
     st.markdown("#### MÓVEL")
     render_ranking_dia(base_dia[base_dia["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
+
 
 
