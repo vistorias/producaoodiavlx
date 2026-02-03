@@ -345,6 +345,16 @@ viewP_mes_full = dfP[dfP["YM"] == ym_sel].copy()
 unids_all = sorted(viewP_mes_full["UNIDADE"].dropna().unique().tolist()) if "UNIDADE" in viewP_mes_full.columns else []
 vists_all = sorted(viewP_mes_full["VISTORIADOR"].dropna().unique().tolist()) if "VISTORIADOR" in viewP_mes_full.columns else []
 
+# Se mudou o mês, pode ficar seleção antiga de unidade/vistoriador fora da lista do mês atual.
+# Ajusta para evitar filtros "fantasma" que deixam o recorte vazio/sem datas.
+_cur_unids = st.session_state.get("f_unids")
+if _cur_unids is None or any(u not in unids_all for u in _cur_unids):
+    st.session_state["f_unids"] = unids_all
+
+_cur_vists = st.session_state.get("f_vists")
+if _cur_vists is not None and any(v not in vists_all for v in _cur_vists):
+    st.session_state["f_vists"] = []
+
 # ---- Unidades com botões selecionar/limpar ----
 cU1, cU2, cU3 = st.columns([6, 2, 2])
 with cU1:
@@ -358,7 +368,7 @@ with cU3:
         st.session_state["f_unids"] = []
         st.rerun()
 
-# ---- Período dentro do mês (min/max) — versão robusta (datetime) ----
+# ---- Período dentro do mês (min/max) — versão robusta ----
 tmp_for_period = viewP_mes_full.copy()
 sel_u_state = st.session_state.get("f_unids")
 
@@ -370,40 +380,43 @@ dmax = _to_date(tmp_for_period["__DATA__"].max()) if "__DATA__" in tmp_for_perio
 
 period_key = f"f_periodo_{ym_sel}"  # chave única por mês
 
+# Se não há range válido, zera o estado do slider para não herdar lixo
 if (not isinstance(dmin, date)) or (not isinstance(dmax, date)) or dmin > dmax:
     if period_key in st.session_state:
         del st.session_state[period_key]
     st.caption("Período dentro do mês: sem datas suficientes (verifique coluna DATA).")
     start_d, end_d = None, None
+
+# Caso especial: só existe UM dia no mês (min == max). Slider do Streamlit pode falhar.
+elif dmin == dmax:
+    if period_key in st.session_state:
+        st.session_state[period_key] = (dmin, dmax)
+    st.caption(f"Período dentro do mês: apenas {dmin.strftime('%d/%m/%Y')} disponível.")
+    start_d, end_d = dmin, dmax
+
 else:
-    dmin_dt, dmax_dt = _to_dt(dmin), _to_dt(dmax)
-
-    prev = st.session_state.get(period_key, (dmin_dt, dmax_dt))
+    # valor anterior (pode vir do session_state)
+    prev = st.session_state.get(period_key, (dmin, dmax))
     if (not isinstance(prev, (tuple, list))) or len(prev) != 2:
-        prev = (dmin_dt, dmax_dt)
+        prev = (dmin, dmax)
 
-    p0, p1 = prev[0], prev[1]
-
-    # normaliza prev (pode vir date, datetime, Timestamp)
-    p0 = _to_dt(_to_date(p0) or dmin)
-    p1 = _to_dt(_to_date(p1) or dmax)
+    p0 = _to_date(prev[0]) or dmin
+    p1 = _to_date(prev[1]) or dmax
 
     # clamp
-    p0 = max(dmin_dt, min(p0, dmax_dt))
-    p1 = max(dmin_dt, min(p1, dmax_dt))
+    p0 = max(dmin, min(p0, dmax))
+    p1 = max(dmin, min(p1, dmax))
     if p0 > p1:
-        p0, p1 = dmin_dt, dmax_dt
+        p0, p1 = dmin, dmax
 
-    start_dt, end_dt = st.slider(
+    start_d, end_d = st.slider(
         "Período dentro do mês",
-        min_value=dmin_dt,
-        max_value=dmax_dt,
+        min_value=dmin,
+        max_value=dmax,
         value=(p0, p1),
         format="DD/MM/YYYY",
         key=period_key,
     )
-
-    start_d, end_d = start_dt.date(), end_dt.date()
 
 # ---- Vistoriadores com botões selecionar/limpar ----
 cV1, cV2, cV3 = st.columns([6, 2, 2])
