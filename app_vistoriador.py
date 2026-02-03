@@ -348,7 +348,6 @@ with cU3:
         st.rerun()
 
 # ---- Período dentro do mês (min/max data do recorte de unidades) ----
-# Primeiro aplica unidades para limitar range do período
 tmp_for_period = viewP_mes_full.copy()
 if "UNIDADE" in tmp_for_period.columns and st.session_state.get("f_unids") is not None:
     if len(st.session_state["f_unids"]) > 0:
@@ -357,22 +356,42 @@ if "UNIDADE" in tmp_for_period.columns and st.session_state.get("f_unids") is no
 dmin = tmp_for_period["__DATA__"].min() if "__DATA__" in tmp_for_period.columns and not tmp_for_period.empty else None
 dmax = tmp_for_period["__DATA__"].max() if "__DATA__" in tmp_for_period.columns and not tmp_for_period.empty else None
 
+start_d = None
+end_d = None
+
 if not isinstance(dmin, date) or not isinstance(dmax, date):
-    # fallback: mês todo (01 ao 28/30/31 não conhecido sem calendar aqui; usa dmin/dmax do próprio dataset)
-    period_default = (None, None)
-    st.caption("Período dentro do mês: sem datas suficientes para slider (verifique coluna DATA).")
-    start_d = None
-    end_d = None
+    st.caption("Período dentro do mês: sem datas suficientes para filtro (verifique coluna DATA).")
 else:
-    period_default = (dmin, dmax)
-    start_d, end_d = st.slider(
-        "Período dentro do mês",
-        min_value=dmin,
-        max_value=dmax,
-        value=period_default,
-        format="DD/MM/YYYY",
-        key="f_periodo"
-    )
+    # 1) Se só existe 1 dia no mês/recorte, não usa slider (evita min==max)
+    if dmin == dmax:
+        st.caption(f"Período dentro do mês: somente {dmin.strftime('%d/%m/%Y')} disponível.")
+        start_d, end_d = dmin, dmax
+        # mantém o session_state coerente
+        st.session_state["f_periodo"] = (start_d, end_d)
+    else:
+        # 2) Se já existe valor salvo, garante que está dentro do novo intervalo
+        cur = st.session_state.get("f_periodo")
+        if isinstance(cur, (tuple, list)) and len(cur) == 2:
+            a, b = cur
+            if isinstance(a, date) and isinstance(b, date):
+                a = max(dmin, min(a, dmax))
+                b = max(dmin, min(b, dmax))
+                if a > b:
+                    a, b = dmin, dmax
+                st.session_state["f_periodo"] = (a, b)
+            else:
+                st.session_state["f_periodo"] = (dmin, dmax)
+        else:
+            st.session_state["f_periodo"] = (dmin, dmax)
+
+        start_d, end_d = st.slider(
+            "Período dentro do mês",
+            min_value=dmin,
+            max_value=dmax,
+            value=st.session_state["f_periodo"],
+            format="DD/MM/YYYY",
+            key="f_periodo",
+        )
 
 # ---- Vistoriadores com botões selecionar/limpar ----
 cV1, cV2, cV3 = st.columns([6, 2, 2])
@@ -1151,5 +1170,6 @@ else:
 
     st.markdown("#### MÓVEL")
     render_ranking_dia(base_dia[base_dia["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
+
 
 
