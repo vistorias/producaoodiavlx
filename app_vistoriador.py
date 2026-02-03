@@ -12,7 +12,7 @@ import os
 import re
 import json
 import unicodedata
-from datetime import datetime, date
+from datetime import datetime, date, time
 from typing import Optional, Tuple
 
 import streamlit as st
@@ -165,6 +165,18 @@ def _is_workday(d):
 
 def _nt(x):
     return x
+
+def _to_date(x):
+    if pd.isna(x) or x is None:
+        return None
+    if isinstance(x, datetime):
+        return x.date()
+    if isinstance(x, pd.Timestamp):
+        return x.date()
+    return x if isinstance(x, date) else None
+
+def _to_dt(d: date) -> datetime:
+    return datetime.combine(d, time.min)
 
 
 # ------------------ LEITURA DO ÍNDICE ------------------
@@ -336,7 +348,7 @@ vists_all = sorted(viewP_mes_full["VISTORIADOR"].dropna().unique().tolist()) if 
 # ---- Unidades com botões selecionar/limpar ----
 cU1, cU2, cU3 = st.columns([6, 2, 2])
 with cU1:
-    _ = st.multiselect("Unidades", options=unids_all, default=unids_all, key="f_unids")
+    f_unids = st.multiselect("Unidades", options=unids_all, default=unids_all, key="f_unids")
 with cU2:
     if st.button("Selecionar todas (Unid.)", key="btn_unid_all"):
         st.session_state["f_unids"] = unids_all
@@ -346,64 +358,57 @@ with cU3:
         st.session_state["f_unids"] = []
         st.rerun()
 
-# ---- Período dentro do mês (min/max data do recorte de unidades) ----
+# ---- Período dentro do mês (min/max) — versão robusta (datetime) ----
 tmp_for_period = viewP_mes_full.copy()
 sel_u_state = st.session_state.get("f_unids")
 
 if "UNIDADE" in tmp_for_period.columns and sel_u_state is not None and len(sel_u_state) > 0:
     tmp_for_period = tmp_for_period[tmp_for_period["UNIDADE"].isin([_upper(u) for u in sel_u_state])].copy()
 
-dmin = tmp_for_period["__DATA__"].min() if "__DATA__" in tmp_for_period.columns and not tmp_for_period.empty else None
-dmax = tmp_for_period["__DATA__"].max() if "__DATA__" in tmp_for_period.columns and not tmp_for_period.empty else None
+dmin = _to_date(tmp_for_period["__DATA__"].min()) if "__DATA__" in tmp_for_period.columns and not tmp_for_period.empty else None
+dmax = _to_date(tmp_for_period["__DATA__"].max()) if "__DATA__" in tmp_for_period.columns and not tmp_for_period.empty else None
 
-def _to_date(x):
-    if pd.isna(x) or x is None:
-        return None
-    if isinstance(x, datetime):
-        return x.date()
-    if isinstance(x, pd.Timestamp):
-        return x.date()
-    return x if isinstance(x, date) else None
+period_key = f"f_periodo_{ym_sel}"  # chave única por mês
 
-dmin = _to_date(dmin)
-dmax = _to_date(dmax)
-
-period_key = f"f_periodo_{ym_sel}"
-
-if not isinstance(dmin, date) or not isinstance(dmax, date) or dmin > dmax:
+if (not isinstance(dmin, date)) or (not isinstance(dmax, date)) or dmin > dmax:
     if period_key in st.session_state:
         del st.session_state[period_key]
-    st.caption("Período dentro do mês: sem datas suficientes para slider (verifique coluna DATA).")
+    st.caption("Período dentro do mês: sem datas suficientes (verifique coluna DATA).")
     start_d, end_d = None, None
 else:
-    prev = st.session_state.get(period_key, (dmin, dmax))
+    dmin_dt, dmax_dt = _to_dt(dmin), _to_dt(dmax)
+
+    prev = st.session_state.get(period_key, (dmin_dt, dmax_dt))
     if (not isinstance(prev, (tuple, list))) or len(prev) != 2:
-        prev = (dmin, dmax)
+        prev = (dmin_dt, dmax_dt)
 
-    p0 = _to_date(prev[0])
-    p1 = _to_date(prev[1])
+    p0, p1 = prev[0], prev[1]
 
-    if not isinstance(p0, date) or not isinstance(p1, date):
-        p0, p1 = dmin, dmax
+    # normaliza prev (pode vir date, datetime, Timestamp)
+    p0 = _to_dt(_to_date(p0) or dmin)
+    p1 = _to_dt(_to_date(p1) or dmax)
 
-    p0 = max(dmin, min(p0, dmax))
-    p1 = max(dmin, min(p1, dmax))
+    # clamp
+    p0 = max(dmin_dt, min(p0, dmax_dt))
+    p1 = max(dmin_dt, min(p1, dmax_dt))
     if p0 > p1:
-        p0, p1 = dmin, dmax
+        p0, p1 = dmin_dt, dmax_dt
 
-    start_d, end_d = st.slider(
+    start_dt, end_dt = st.slider(
         "Período dentro do mês",
-        min_value=dmin,
-        max_value=dmax,
+        min_value=dmin_dt,
+        max_value=dmax_dt,
         value=(p0, p1),
         format="DD/MM/YYYY",
-        key=period_key
+        key=period_key,
     )
+
+    start_d, end_d = start_dt.date(), end_dt.date()
 
 # ---- Vistoriadores com botões selecionar/limpar ----
 cV1, cV2, cV3 = st.columns([6, 2, 2])
 with cV1:
-    _ = st.multiselect("Vistoriadores", options=vists_all, default=[], key="f_vists")
+    f_vists = st.multiselect("Vistoriadores", options=vists_all, default=[], key="f_vists")
 with cV2:
     if st.button("Selecionar todos", key="btn_vist_all"):
         st.session_state["f_vists"] = vists_all
@@ -417,6 +422,7 @@ with cV3:
 # ------------------ APLICA FILTROS ------------------
 viewP_mes = viewP_mes_full.copy()
 
+# unidades
 if "UNIDADE" in viewP_mes.columns:
     sel_u = st.session_state.get("f_unids", unids_all)
     if sel_u is not None and len(sel_u) > 0:
@@ -424,9 +430,11 @@ if "UNIDADE" in viewP_mes.columns:
     elif sel_u is not None and len(sel_u) == 0:
         viewP_mes = viewP_mes.iloc[0:0].copy()
 
+# período
 if isinstance(start_d, date) and isinstance(end_d, date) and "__DATA__" in viewP_mes.columns and not viewP_mes.empty:
     viewP_mes = viewP_mes[(viewP_mes["__DATA__"] >= start_d) & (viewP_mes["__DATA__"] <= end_d)].copy()
 
+# vistoriadores
 sel_v = st.session_state.get("f_vists", [])
 if sel_v and "VISTORIADOR" in viewP_mes.columns:
     viewP_mes = viewP_mes[viewP_mes["VISTORIADOR"].isin([_upper(v) for v in sel_v])].copy()
@@ -490,7 +498,7 @@ st.markdown(
 )
 
 
-# ------------------ RESUMO (mês selecionado) — MODELO ANTIGO (tendência no BRUTO) ------------------
+# ------------------ RESUMO (mês selecionado) — tendência no BRUTO ------------------
 st.markdown('<div class="section">Resumo por Vistoriador</div>', unsafe_allow_html=True)
 
 view = viewP_mes.copy()
@@ -557,20 +565,10 @@ else:
 
     grp["META_DIA"] = np.where(grp["DIAS_UTEIS"] > 0, grp["META_MENSAL"] / grp["DIAS_UTEIS"], 0.0)
     grp["FALTANTE_MES"] = np.maximum(grp["META_MENSAL"] - grp["LIQUIDO"], 0)
-
     grp["DIAS_RESTANTES"] = np.maximum(grp["DIAS_UTEIS"] - grp["DIAS_PASSADOS"], 0)
+    grp["NECESSIDADE_DIA"] = np.where(grp["DIAS_RESTANTES"] > 0, grp["FALTANTE_MES"] / grp["DIAS_RESTANTES"], 0.0)
 
-    grp["NECESSIDADE_DIA"] = np.where(
-        grp["DIAS_RESTANTES"] > 0,
-        grp["FALTANTE_MES"] / grp["DIAS_RESTANTES"],
-        0.0
-    )
-
-    grp["MEDIA_DIA_ATUAL"] = np.where(
-        grp["DIAS_PASSADOS"] > 0,
-        grp["VISTORIAS"] / grp["DIAS_PASSADOS"],
-        0.0
-    )
+    grp["MEDIA_DIA_ATUAL"] = np.where(grp["DIAS_PASSADOS"] > 0, grp["VISTORIAS"] / grp["DIAS_PASSADOS"], 0.0)
     grp["PROJECAO_MES"] = (grp["VISTORIAS"] + grp["MEDIA_DIA_ATUAL"] * grp["DIAS_RESTANTES"]).round(0)
     grp["TENDENCIA_%"] = np.where(grp["META_MENSAL"] > 0, (grp["PROJECAO_MES"] / grp["META_MENSAL"]) * 100, np.nan)
 
@@ -603,7 +601,7 @@ else:
     def chip_nec(x):
         try:
             v = float(x)
-        except:
+        except Exception:
             return "—"
         return "0 ✅" if v <= 0 else f"{int(round(v))} 🔥"
 
@@ -704,7 +702,7 @@ hist = pd.DataFrame({"VISTORIADOR": alvo_names})
 hist["CIDADE"] = hist["VISTORIADOR"].map(city_map).fillna("")
 hist["TIPO"] = hist["VISTORIADOR"].map(tipo_map).fillna("")
 
-def _get_liq_meta(ym: str, vist: str, unid_pref: str = "") -> Tuple[Optional[int], Optional[int]]:
+def _get_liq_meta(ym: str, vist: str, unid_pref: str = ""):
     pm = prod_map.get(ym, pd.DataFrame(columns=["VISTORIADOR","UNIDADE","liq"]))
     mm = meta_map.get(ym, pd.DataFrame(columns=["VISTORIADOR","UNIDADE","META_MENSAL","TIPO"]))
 
@@ -729,7 +727,7 @@ def _get_liq_meta(ym: str, vist: str, unid_pref: str = "") -> Tuple[Optional[int
 
     return liq, meta
 
-def _bateu(liq: Optional[int], meta: Optional[int]) -> Optional[bool]:
+def _bateu(liq, meta):
     if liq is None or meta is None or meta <= 0:
         return None
     return liq >= meta
@@ -774,7 +772,7 @@ for ym in meses_janela:
         metas.append(np.nan if meta is None else meta)
 
         b = _bateu(liq, meta)
-        flags.append("🔴" if b is False else "—" if b is True else "—")
+        flags.append("🔴" if b is False else "—")
 
     hist[col_liq] = liqs
     hist[col_meta] = metas
@@ -784,23 +782,6 @@ num_cols = [c for c in hist.columns if c.startswith("Líquido ") or c.startswith
 for c in num_cols:
     hist[c] = pd.to_numeric(hist[c], errors="coerce")
     hist[c] = hist[c].map(lambda x: "—" if pd.isna(x) else f"{int(x):,}".replace(",", "."))
-
-lab_cur = _fmt_mes(ym_sel)
-col_liq_cur = f"Líquido {lab_cur}"
-col_meta_cur = f"Meta {lab_cur}"
-
-def _to_num(s):
-    try:
-        return float(str(s).replace(".", "").replace(",", "."))
-    except Exception:
-        return np.nan
-
-liq_num = hist[col_liq_cur].map(_to_num).fillna(0).values
-meta_num = hist[col_meta_cur].map(_to_num).fillna(0).values
-falt_num = (meta_num - liq_num).clip(min=0)
-
-order_key = hist["MESES_CONSECUTIVOS_SEM_META"].astype(int).values * 1_000_000 + falt_num
-hist = hist.iloc[np.argsort(-order_key)].reset_index(drop=True)
 
 cols_show = ["CIDADE", "VISTORIADOR", "TIPO", "SITUAÇÃO", "MESES_CONSECUTIVOS_SEM_META"]
 for ym in meses_janela:
@@ -886,7 +867,6 @@ if view.empty:
     st.caption("Nenhum chassi com múltiplas vistorias dentro dos filtros.")
 else:
     col_chas_view = _find_col(list(view.columns), "CHASSI")
-
     if not col_chas_view:
         st.caption("Não encontrei a coluna CHASSI no recorte atual para montar a auditoria.")
     else:
@@ -924,10 +904,4 @@ else:
 
             st.dataframe(dup, use_container_width=True, hide_index=True)
 
-# ============================================================
-# OBS: Seu print do erro aponta para o st.slider.
-# Se ainda aparecer erro depois desse app.py, a causa costuma ser:
-# - dmin/dmax inválidos (DATA vazia ou não parseada) OU
-# - valor salvo no session_state fora do range do mês (key fixa)
-# Aqui, a key do período é única por mês (f_periodo_{ym_sel}) e fazemos clamp.
-# ============================================================
+# Observação: o restante do seu app (Consolidado do mês, rankings etc.) pode ser colado abaixo sem mudanças.
