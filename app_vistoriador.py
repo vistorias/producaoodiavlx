@@ -349,27 +349,59 @@ with cU3:
 
 # ---- Período dentro do mês (min/max data do recorte de unidades) ----
 # Primeiro aplica unidades para limitar range do período
+# ---- Período dentro do mês (min/max data do recorte de unidades) ----
 tmp_for_period = viewP_mes_full.copy()
-if "UNIDADE" in tmp_for_period.columns and st.session_state.get("f_unids") is not None:
-    if len(st.session_state["f_unids"]) > 0:
-        tmp_for_period = tmp_for_period[tmp_for_period["UNIDADE"].isin([_upper(u) for u in st.session_state["f_unids"]])].copy()
+sel_u_state = st.session_state.get("f_unids")
+
+if "UNIDADE" in tmp_for_period.columns and sel_u_state is not None and len(sel_u_state) > 0:
+    tmp_for_period = tmp_for_period[tmp_for_period["UNIDADE"].isin([_upper(u) for u in sel_u_state])].copy()
 
 dmin = tmp_for_period["__DATA__"].min() if "__DATA__" in tmp_for_period.columns and not tmp_for_period.empty else None
 dmax = tmp_for_period["__DATA__"].max() if "__DATA__" in tmp_for_period.columns and not tmp_for_period.empty else None
 
-if not isinstance(dmin, date) or not isinstance(dmax, date):
-    # fallback: mês todo (01 ao 28/30/31 não conhecido sem calendar aqui; usa dmin/dmax do próprio dataset)
-    period_default = (None, None)
+# Normaliza para datetime.date e valida
+def _to_date(x):
+    if pd.isna(x) or x is None:
+        return None
+    if isinstance(x, datetime):
+        return x.date()
+    if isinstance(x, pd.Timestamp):
+        return x.date()
+    return x if isinstance(x, date) else None
+
+dmin = _to_date(dmin)
+dmax = _to_date(dmax)
+
+# Se não há range válido, zera o estado do slider para não “herdar” lixo
+if not isinstance(dmin, date) or not isinstance(dmax, date) or dmin > dmax:
+    if "f_periodo" in st.session_state:
+        del st.session_state["f_periodo"]
     st.caption("Período dentro do mês: sem datas suficientes para slider (verifique coluna DATA).")
-    start_d = None
-    end_d = None
+    start_d, end_d = None, None
 else:
-    period_default = (dmin, dmax)
+    # Pega valor anterior e “clampa” para ficar dentro do novo range
+    prev = st.session_state.get("f_periodo", (dmin, dmax))
+
+    if (not isinstance(prev, (tuple, list))) or len(prev) != 2:
+        prev = (dmin, dmax)
+
+    p0 = _to_date(prev[0])
+    p1 = _to_date(prev[1])
+
+    if not isinstance(p0, date) or not isinstance(p1, date):
+        p0, p1 = dmin, dmax
+
+    # clamp
+    p0 = max(dmin, min(p0, dmax))
+    p1 = max(dmin, min(p1, dmax))
+    if p0 > p1:
+        p0, p1 = dmin, dmax
+
     start_d, end_d = st.slider(
         "Período dentro do mês",
         min_value=dmin,
         max_value=dmax,
-        value=period_default,
+        value=(p0, p1),
         format="DD/MM/YYYY",
         key="f_periodo"
     )
@@ -1151,6 +1183,7 @@ else:
 
     st.markdown("#### MÓVEL")
     render_ranking_dia(base_dia[base_dia["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
+
 
 
 
