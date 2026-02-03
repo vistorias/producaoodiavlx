@@ -349,7 +349,6 @@ with cU3:
 
 # ---- Período dentro do mês (min/max data do recorte de unidades) ----
 # Primeiro aplica unidades para limitar range do período
-# ---- Período dentro do mês (min/max data do recorte de unidades) ----
 tmp_for_period = viewP_mes_full.copy()
 sel_u_state = st.session_state.get("f_unids")
 
@@ -372,15 +371,18 @@ def _to_date(x):
 dmin = _to_date(dmin)
 dmax = _to_date(dmax)
 
+# >>> CHAVE ÚNICA POR MÊS (evita herdar valor antigo fora do range)
+period_key = f"f_periodo_{ym_sel}"
+
 # Se não há range válido, zera o estado do slider para não “herdar” lixo
 if not isinstance(dmin, date) or not isinstance(dmax, date) or dmin > dmax:
-    if "f_periodo" in st.session_state:
-        del st.session_state["f_periodo"]
+    if period_key in st.session_state:
+        del st.session_state[period_key]
     st.caption("Período dentro do mês: sem datas suficientes para slider (verifique coluna DATA).")
     start_d, end_d = None, None
 else:
     # Pega valor anterior e “clampa” para ficar dentro do novo range
-    prev = st.session_state.get("f_periodo", (dmin, dmax))
+    prev = st.session_state.get(period_key, (dmin, dmax))
 
     if (not isinstance(prev, (tuple, list))) or len(prev) != 2:
         prev = (dmin, dmax)
@@ -403,7 +405,7 @@ else:
         max_value=dmax,
         value=(p0, p1),
         format="DD/MM/YYYY",
-        key="f_periodo"
+        key=period_key
     )
 
 # ---- Vistoriadores com botões selecionar/limpar ----
@@ -1183,6 +1185,7 @@ else:
 
     st.markdown("#### MÓVEL")
     render_ranking_dia(base_dia[base_dia["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
+
 
 
 
