@@ -25,8 +25,8 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 
 # ------------------ CONFIG BÁSICA ------------------
-st.set_page_config(page_title="Painel de Produção por Vistoriador - Velox Vistorias", layout="wide")
-st.title("Painel de Produção por Vistoriador - Velox Vistoria")
+st.set_page_config(page_title="Painel de Produção por Vistoriador - Log Vistorias", layout="wide")
+st.title("Painel de Produção por Vistoriador - Log Vistoria")
 
 st.markdown(
     """
@@ -88,7 +88,7 @@ client = make_client()
 
 
 # ------------------ SECRETS: IDs ------------------
-PROD_INDEX_ID = st.secrets.get("velox_index_sheet_id", "").strip()
+PROD_INDEX_ID = st.secrets.get("log_index_sheet_id", "").strip()
 if not PROD_INDEX_ID:
     st.error("Faltou `prod_index_sheet_id` no secrets.toml")
     st.stop()
@@ -1151,5 +1151,4 @@ else:
 
     st.markdown("#### MÓVEL")
     render_ranking_dia(base_dia[base_dia["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
-
 
