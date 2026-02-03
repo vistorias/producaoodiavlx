@@ -13,7 +13,7 @@ import re
 import json
 import unicodedata
 from datetime import datetime, date
-from typing import Optional, Tuple, Dict, List
+from typing import Optional, Tuple
 
 import streamlit as st
 import pandas as pd
@@ -40,6 +40,7 @@ st.markdown(
 .sub.bad{background:#fdeaea;color:#a31616;border:1px solid #f2cccc}
 .sub.neu{background:#f1f1f4;color:#444;border:1px solid #e4e4e8}
 .section{font-size:18px;font-weight:900;margin:22px 0 8px}
+.section-title{font-size:18px;font-weight:900;margin:22px 0 8px}
 .small{color:#666;font-size:13px}
 .table-note{margin-top:8px;color:#666;font-size:12px}
 </style>
@@ -90,7 +91,7 @@ client = make_client()
 # ------------------ SECRETS: IDs ------------------
 PROD_INDEX_ID = st.secrets.get("velox_index_sheet_id", "").strip()
 if not PROD_INDEX_ID:
-    st.error("Faltou `prod_index_sheet_id` no secrets.toml")
+    st.error("Faltou `velox_index_sheet_id` no secrets.toml")
     st.stop()
 
 
@@ -324,8 +325,6 @@ label_map = {_fmt_mes(m): m for m in ym_all}
 # ------------------ FILTROS (layout completo) ------------------
 st.markdown('<div class="section">Filtros</div>', unsafe_allow_html=True)
 
-# Unidades (geral) - lista considerando mês selecionado depois, mas precisamos de um mês inicial para montar lista
-# então: mês como primeiro filtro
 sel_label = st.selectbox("Mês de referência", options=list(label_map.keys()), index=len(ym_all) - 1, key="f_mesref")
 ym_sel = label_map[sel_label]
 
@@ -337,7 +336,7 @@ vists_all = sorted(viewP_mes_full["VISTORIADOR"].dropna().unique().tolist()) if 
 # ---- Unidades com botões selecionar/limpar ----
 cU1, cU2, cU3 = st.columns([6, 2, 2])
 with cU1:
-    f_unids = st.multiselect("Unidades", options=unids_all, default=unids_all, key="f_unids")
+    _ = st.multiselect("Unidades", options=unids_all, default=unids_all, key="f_unids")
 with cU2:
     if st.button("Selecionar todas (Unid.)", key="btn_unid_all"):
         st.session_state["f_unids"] = unids_all
@@ -348,7 +347,6 @@ with cU3:
         st.rerun()
 
 # ---- Período dentro do mês (min/max data do recorte de unidades) ----
-# Primeiro aplica unidades para limitar range do período
 tmp_for_period = viewP_mes_full.copy()
 sel_u_state = st.session_state.get("f_unids")
 
@@ -358,7 +356,6 @@ if "UNIDADE" in tmp_for_period.columns and sel_u_state is not None and len(sel_u
 dmin = tmp_for_period["__DATA__"].min() if "__DATA__" in tmp_for_period.columns and not tmp_for_period.empty else None
 dmax = tmp_for_period["__DATA__"].max() if "__DATA__" in tmp_for_period.columns and not tmp_for_period.empty else None
 
-# Normaliza para datetime.date e valida
 def _to_date(x):
     if pd.isna(x) or x is None:
         return None
@@ -371,19 +368,15 @@ def _to_date(x):
 dmin = _to_date(dmin)
 dmax = _to_date(dmax)
 
-# >>> CHAVE ÚNICA POR MÊS (evita herdar valor antigo fora do range)
 period_key = f"f_periodo_{ym_sel}"
 
-# Se não há range válido, zera o estado do slider para não “herdar” lixo
 if not isinstance(dmin, date) or not isinstance(dmax, date) or dmin > dmax:
     if period_key in st.session_state:
         del st.session_state[period_key]
     st.caption("Período dentro do mês: sem datas suficientes para slider (verifique coluna DATA).")
     start_d, end_d = None, None
 else:
-    # Pega valor anterior e “clampa” para ficar dentro do novo range
     prev = st.session_state.get(period_key, (dmin, dmax))
-
     if (not isinstance(prev, (tuple, list))) or len(prev) != 2:
         prev = (dmin, dmax)
 
@@ -393,7 +386,6 @@ else:
     if not isinstance(p0, date) or not isinstance(p1, date):
         p0, p1 = dmin, dmax
 
-    # clamp
     p0 = max(dmin, min(p0, dmax))
     p1 = max(dmin, min(p1, dmax))
     if p0 > p1:
@@ -411,7 +403,7 @@ else:
 # ---- Vistoriadores com botões selecionar/limpar ----
 cV1, cV2, cV3 = st.columns([6, 2, 2])
 with cV1:
-    f_vists = st.multiselect("Vistoriadores", options=vists_all, default=[], key="f_vists")
+    _ = st.multiselect("Vistoriadores", options=vists_all, default=[], key="f_vists")
 with cV2:
     if st.button("Selecionar todos", key="btn_vist_all"):
         st.session_state["f_vists"] = vists_all
@@ -425,7 +417,6 @@ with cV3:
 # ------------------ APLICA FILTROS ------------------
 viewP_mes = viewP_mes_full.copy()
 
-# unidades
 if "UNIDADE" in viewP_mes.columns:
     sel_u = st.session_state.get("f_unids", unids_all)
     if sel_u is not None and len(sel_u) > 0:
@@ -433,11 +424,9 @@ if "UNIDADE" in viewP_mes.columns:
     elif sel_u is not None and len(sel_u) == 0:
         viewP_mes = viewP_mes.iloc[0:0].copy()
 
-# período
 if isinstance(start_d, date) and isinstance(end_d, date) and "__DATA__" in viewP_mes.columns and not viewP_mes.empty:
     viewP_mes = viewP_mes[(viewP_mes["__DATA__"] >= start_d) & (viewP_mes["__DATA__"] <= end_d)].copy()
 
-# vistoriadores
 sel_v = st.session_state.get("f_vists", [])
 if sel_v and "VISTORIADOR" in viewP_mes.columns:
     viewP_mes = viewP_mes[viewP_mes["VISTORIADOR"].isin([_upper(v) for v in sel_v])].copy()
@@ -541,7 +530,6 @@ else:
     grp = grp.merge(wd_passados, on="VISTORIADOR", how="left").fillna({"DIAS_PASSADOS": 0})
     grp["DIAS_PASSADOS"] = grp["DIAS_PASSADOS"].astype(int)
 
-    # METAS do mês selecionado
     metas_ref = dfMetas[dfMetas["YM"].astype(str) == ym_sel].copy() if not dfMetas.empty else pd.DataFrame()
 
     if not metas_ref.empty:
@@ -567,7 +555,6 @@ else:
     grp["META_MENSAL"] = pd.to_numeric(grp.get("META_MENSAL", 0), errors="coerce").fillna(0).astype(int)
     grp["DIAS_UTEIS"] = pd.to_numeric(grp.get("DIAS_UTEIS", 0), errors="coerce").fillna(0).astype(int)
 
-    # cálculos
     grp["META_DIA"] = np.where(grp["DIAS_UTEIS"] > 0, grp["META_MENSAL"] / grp["DIAS_UTEIS"], 0.0)
     grp["FALTANTE_MES"] = np.maximum(grp["META_MENSAL"] - grp["LIQUIDO"], 0)
 
@@ -579,7 +566,6 @@ else:
         0.0
     )
 
-    # tendência no BRUTO (VISTORIAS)
     grp["MEDIA_DIA_ATUAL"] = np.where(
         grp["DIAS_PASSADOS"] > 0,
         grp["VISTORIAS"] / grp["DIAS_PASSADOS"],
@@ -588,7 +574,6 @@ else:
     grp["PROJECAO_MES"] = (grp["VISTORIAS"] + grp["MEDIA_DIA_ATUAL"] * grp["DIAS_RESTANTES"]).round(0)
     grp["TENDENCIA_%"] = np.where(grp["META_MENSAL"] > 0, (grp["PROJECAO_MES"] / grp["META_MENSAL"]) * 100, np.nan)
 
-    # normalização tipo + filtro só para tabela
     grp["TIPO_NORM"] = grp.get("TIPO", "").astype(str).str.upper().str.replace("MOVEL", "MÓVEL").str.strip()
     grp.loc[grp["TIPO_NORM"] == "", "TIPO_NORM"] = "—"
 
@@ -604,7 +589,6 @@ else:
     )
     grp_tbl = grp if not sel_tipos else grp[grp["TIPO_NORM"].isin(sel_tipos)]
 
-    # ordenação e formatação
     grp_tbl = grp_tbl.sort_values(["PROJECAO_MES", "LIQUIDO"], ascending=[False, False])
     fmt = grp_tbl.copy()
 
@@ -901,7 +885,6 @@ st.markdown("<div class='section-title'>Chassis com múltiplas vistorias</div>",
 if view.empty:
     st.caption("Nenhum chassi com múltiplas vistorias dentro dos filtros.")
 else:
-    # Descobre qual coluna é o CHASSI dentro do dataframe "view"
     col_chas_view = _find_col(list(view.columns), "CHASSI")
 
     if not col_chas_view:
@@ -941,255 +924,10 @@ else:
 
             st.dataframe(dup, use_container_width=True, hide_index=True)
 
-
-# =========================
-# CONSOLIDADO DO MÊS + RANKING MENSAL (TOP/BOTTOM)
-# =========================
-TOP_LABEL = "TOP BOX"
-BOTTOM_LABEL = "BOTTOM BOX"
-
-st.markdown("---")
-st.markdown("<div class='section-title'>Consolidado do Mês + Ranking por Vistoriador</div>", unsafe_allow_html=True)
-
-datas_ok = [d for d in view["__DATA__"] if isinstance(d, date)]
-if len(datas_ok) == 0:
-    st.info("Sem datas dentro dos filtros atuais para montar o consolidado do mês.")
-else:
-    ref = sorted(datas_ok)[-1]
-    ref_ano, ref_mes = ref.year, ref.month
-    mes_label = f"{ref_mes:02d}/{ref_ano}"
-    mask_mes = view["__DATA__"].apply(lambda d: isinstance(d, date) and d.year == ref_ano and d.month == ref_mes)
-    view_mes = view[mask_mes].copy()
-
-    prod_mes = (view_mes.groupby("VISTORIADOR", dropna=False)
-                .agg(VISTORIAS=("IS_REV","size"), REVISTORIAS=("IS_REV","sum")).reset_index())
-    prod_mes["LIQUIDO"] = prod_mes["VISTORIAS"] - prod_mes["REVISTORIAS"]
-
-    metas_join = (
-        dfMetas[dfMetas["YM"] == f"{ref_ano}-{ref_mes:02d}"][["VISTORIADOR","TIPO","META_MENSAL"]].copy()
-        if not dfMetas.empty and "YM" in dfMetas.columns
-        else pd.DataFrame(columns=["VISTORIADOR","TIPO","META_MENSAL"])
-    )
-
-    base_mes = prod_mes.merge(metas_join, on="VISTORIADOR", how="left")
-    base_mes["TIPO"] = (
-    base_mes["TIPO"]
-    .fillna("")
-    .astype(str)
-    .map(_upper)                # já existe no seu código
-    .replace({"MOVEL": "MÓVEL"})
-    .replace("", "—")
-)
-    base_mes["META_MENSAL"] = pd.to_numeric(base_mes["META_MENSAL"], errors="coerce").fillna(0)
-    base_mes["ATING_%"] = np.where(base_mes["META_MENSAL"]>0, (base_mes["VISTORIAS"]/base_mes["META_MENSAL"])*100, np.nan)
-
-    meta_tot = int(base_mes["META_MENSAL"].sum())
-    vist_tot = int(base_mes["VISTORIAS"].sum())
-    rev_tot  = int(base_mes["REVISTORIAS"].sum())
-    liq_tot  = int(base_mes["LIQUIDO"].sum())
-    ating_g  = (vist_tot / meta_tot * 100) if meta_tot > 0 else np.nan
-
-    def chip_pct(p):
-        if pd.isna(p): return "—"
-        p = float(p)
-        if p >= 110: emo = "🏆"
-        elif p >= 100: emo = "🚀"
-        elif p >= 90: emo = "💪"
-        elif p >= 80: emo = "😬"
-        else: emo = "😟"
-        return f"{p:.0f}% {emo}"
-
-    cards_mes = [
-        ("Mês de referência", mes_label),
-        ("Meta (soma)", f"{meta_tot:,}".replace(",", ".")),
-        ("Vistorias (geral)", f"{vist_tot:,}".replace(",", ".")),
-        ("Revistorias", f"{rev_tot:,}".replace(",", ".")),
-        ("Líquido", f"{liq_tot:,}".replace(",", ".")),
-        ("% Ating. (sobre geral)", chip_pct(ating_g)),
-    ]
-    st.markdown(
-        '<div class="card-wrap">' +
-        "".join([f"<div class='card'><h4>{t}</h4><h2>{v}</h2></div>" for t, v in cards_mes]) +
-        "</div>",
-        unsafe_allow_html=True
-    )
-
-    def chip_pct_row(p):
-        if pd.isna(p): return "—"
-        p = float(p)
-        if p >= 110: emo = "🏆"
-        elif p >= 100: emo = "🚀"
-        elif p >= 90: emo = "💪"
-        elif p >= 80: emo = "😬"
-        else: emo = "😟"
-        return f"{p:.0f}% {emo}"
-
-    def render_ranking(df_sub, titulo):
-        if len(df_sub) == 0:
-            st.caption(f"Sem dados para {titulo} em {mes_label}.")
-            return
-        rk = df_sub[df_sub["META_MENSAL"] > 0].copy()
-        if len(rk) == 0:
-            st.caption(f"Ninguém com META cadastrada para {titulo}.")
-            return
-
-        rk = rk.sort_values("ATING_%", ascending=False)
-
-        top = rk.head(5).copy()
-        medals = ["🥇","🥈","🥉","🏅","🏅"]
-        top["🏅"] = [medals[i] if i < len(medals) else "🏅" for i in range(len(top))]
-        top_fmt = pd.DataFrame({
-            " ": top["🏅"],
-            "Vistoriador": top["VISTORIADOR"],
-            "Meta (mês)": top["META_MENSAL"].map(lambda x: f"{int(x):,}".replace(",", ".")),
-            "Vistorias (geral)": top["VISTORIAS"].map(int),
-            "Revistorias": top["REVISTORIAS"].map(int),
-            "Líquido": top["LIQUIDO"].map(int),
-            "% Ating. (geral/meta)": top["ATING_%"].map(chip_pct_row),
-        })
-
-        bot = rk.tail(5).sort_values("ATING_%", ascending=True).copy()
-        badgies = ["🆘","🪫","🐢","⚠️","⚠️"]
-        bot["⚠️"] = [badgies[i] if i < len(badgies) else "⚠️" for i in range(len(bot))]
-        bot_fmt = pd.DataFrame({
-            " ": bot["⚠️"],
-            "Vistoriador": bot["VISTORIADOR"],
-            "Meta (mês)": bot["META_MENSAL"].map(lambda x: f"{int(x):,}".replace(",", ".")),
-            "Vistorias (geral)": bot["VISTORIAS"].map(int),
-            "Revistorias": bot["REVISTORIAS"].map(int),
-            "Líquido": bot["LIQUIDO"].map(int),
-            "% Ating. (geral/meta)": bot["ATING_%"].map(chip_pct_row),
-        })
-
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(f"**{_nt(TOP_LABEL)} — {mes_label}**", unsafe_allow_html=True)
-            st.dataframe(top_fmt, use_container_width=True, hide_index=True)
-        with c2:
-            st.markdown(f"**{_nt(BOTTOM_LABEL)} — {mes_label}**", unsafe_allow_html=True)
-            st.dataframe(bot_fmt, use_container_width=True, hide_index=True)
-
-    st.markdown("#### FIXO")
-    render_ranking(base_mes[base_mes["TIPO"] == "FIXO"], "vistoriadores FIXO")
-
-    st.markdown("#### MÓVEL")
-    render_ranking(base_mes[base_mes["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
-
-
-# =========================
-# RANKING DO DIA POR VISTORIADOR (TOP/BOTTOM)
-# =========================
-st.markdown("---")
-st.markdown("<div class='section-title'>Ranking do Dia por Vistoriador</div>", unsafe_allow_html=True)
-
-dates_avail = sorted([d for d in view["__DATA__"] if isinstance(d, date)])
-if not dates_avail:
-    st.info("Sem datas dentro dos filtros atuais para montar o ranking diário.")
-else:
-    default_day = dates_avail[-1]
-    rank_day = st.date_input(
-        "Dia para o ranking",
-        value=st.session_state.get("rank_day_sel", default_day),
-        format="DD/MM/YYYY",
-        key="rank_day_sel"
-    )
-
-    if rank_day in dates_avail:
-        used_day = rank_day
-        info_msg = None
-    else:
-        cands = [d for d in dates_avail if d <= rank_day]
-        used_day = cands[-1] if cands else dates_avail[-1]
-        info_msg = f"Sem dados em {rank_day.strftime('%d/%m/%Y')}. Exibindo {used_day.strftime('%d/%m/%Y')}."
-
-    if info_msg:
-        st.caption(info_msg)
-
-    view_dia = view[view["__DATA__"] == used_day].copy()
-
-    prod_dia = (view_dia.groupby("VISTORIADOR", dropna=False)
-                .agg(VISTORIAS_DIA=("IS_REV", "size"),
-                     REVISTORIAS_DIA=("IS_REV", "sum")).reset_index())
-    prod_dia["LIQUIDO_DIA"] = prod_dia["VISTORIAS_DIA"] - prod_dia["REVISTORIAS_DIA"]
-
-    ym_day = f"{used_day.year}-{used_day.month:02d}"
-    metas_join = (
-        dfMetas[dfMetas["YM"] == ym_day][["VISTORIADOR","TIPO","META_MENSAL","DIAS_UTEIS"]].copy()
-        if not dfMetas.empty and "YM" in dfMetas.columns
-        else pd.DataFrame(columns=["VISTORIADOR","TIPO","META_MENSAL","DIAS_UTEIS"])
-    )
-
-    base_dia = prod_dia.merge(metas_join, on="VISTORIADOR", how="left")
-    base_dia["TIPO"] = base_dia["TIPO"].astype(str).str.upper().replace({"MOVEL":"MÓVEL"}).replace("", "—")
-    for c in ["META_MENSAL","DIAS_UTEIS"]:
-        base_dia[c] = pd.to_numeric(base_dia.get(c,0), errors="coerce").fillna(0)
-
-    base_dia["META_DIA"] = np.where(base_dia["DIAS_UTEIS"]>0, base_dia["META_MENSAL"]/base_dia["DIAS_UTEIS"], 0.0)
-    base_dia["ATING_DIA_%"] = np.where(base_dia["META_DIA"]>0, (base_dia["VISTORIAS_DIA"]/base_dia["META_DIA"])*100, np.nan)
-
-    def chip_pct_row_dia(p):
-        if pd.isna(p): return "—"
-        p = float(p)
-        if p >= 110: emo = "🏆"
-        elif p >= 100: emo = "🚀"
-        elif p >= 90: emo = "💪"
-        elif p >= 80: emo = "😬"
-        else: emo = "😟"
-        return f"{p:.0f}% {emo}"
-
-    def render_ranking_dia(df_sub, titulo):
-        if df_sub.empty:
-            st.caption(f"Sem dados para {titulo} em {used_day.strftime('%d/%m/%Y')}.")
-            return
-        rk = df_sub[df_sub["META_DIA"] > 0].copy()
-        if rk.empty:
-            st.caption(f"Ninguém com META do dia cadastrada para {titulo}.")
-            return
-
-        rk = rk.sort_values("ATING_DIA_%", ascending=False)
-
-        top = rk.head(5).copy()
-        medals = ["🥇","🥈","🥉","🏅","🏅"]
-        top["🏅"] = [medals[i] if i < len(medals) else "🏅" for i in range(len(top))]
-        top_fmt = pd.DataFrame({
-            " ": top["🏅"], "Vistoriador": top["VISTORIADOR"],
-            "Meta (dia)": top["META_DIA"].map(lambda x: int(round(x))),
-            "Vistorias (dia)": top["VISTORIAS_DIA"].map(int),
-            "Revistorias": top["REVISTORIAS_DIA"].map(int),
-            "Líquido (dia)": top["LIQUIDO_DIA"].map(int),
-            "% Ating. (dia)": top["ATING_DIA_%"].map(chip_pct_row_dia),
-        })
-
-        bot = rk.tail(5).sort_values("ATING_DIA_%", ascending=True).copy()
-        badgies = ["🆘","🪫","🐢","⚠️","⚠️"]
-        bot["⚠️"] = [badgies[i] if i < len(badgies) else "⚠️" for i in range(len(bot))]
-        bot_fmt = pd.DataFrame({
-            " ": bot["⚠️"], "Vistoriador": bot["VISTORIADOR"],
-            "Meta (dia)": bot["META_DIA"].map(lambda x: int(round(x))),
-            "Vistorias (dia)": bot["VISTORIAS_DIA"].map(int),
-            "Revistorias": bot["REVISTORIAS_DIA"].map(int),
-            "Líquido (dia)": bot["LIQUIDO_DIA"].map(int),
-            "% Ating. (dia)": bot["ATING_DIA_%"].map(chip_pct_row_dia),
-        })
-
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(f"**{_nt(TOP_LABEL)}**", unsafe_allow_html=True)
-            st.dataframe(top_fmt, use_container_width=True, hide_index=True)
-        with c2:
-            st.markdown(f"**{_nt(BOTTOM_LABEL)}**", unsafe_allow_html=True)
-            st.dataframe(bot_fmt, use_container_width=True, hide_index=True)
-
-    st.markdown("#### FIXO")
-    render_ranking_dia(base_dia[base_dia["TIPO"] == "FIXO"], "vistoriadores FIXO")
-
-    st.markdown("#### MÓVEL")
-    render_ranking_dia(base_dia[base_dia["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
-
-
-
-
-
-
-
-
+# ============================================================
+# OBS: Seu print do erro aponta para o st.slider.
+# Se ainda aparecer erro depois desse app.py, a causa costuma ser:
+# - dmin/dmax inválidos (DATA vazia ou não parseada) OU
+# - valor salvo no session_state fora do range do mês (key fixa)
+# Aqui, a key do período é única por mês (f_periodo_{ym_sel}) e fazemos clamp.
+# ============================================================
