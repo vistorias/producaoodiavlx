@@ -6,6 +6,7 @@
 # 1) Ler DIAS_UTEIS da aba METAS e exibir DIAS_UTEIS + NECESSIDADE_DIA corretamente
 # 2) Voltar filtros completos: Unidades + (botões selecionar/limpar), Mês, Período dentro do mês, Vistoriadores + (botões)
 # 3) Tendência/Projeção no RESUMO calculadas em cima do TOTAL BRUTO (VISTORIAS), como solicitado
+# 4) HISTÓRICO DE META: comparar META x GERAL (VISTORIAS) e mostrar Meta antes do Realizado (Geral)
 # ============================================================
 
 import os
@@ -25,7 +26,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 
 # ------------------ CONFIG BÁSICA ------------------
-st.set_page_config(page_title="Painel de Produção por Vistoriador - Velox Vistorias", layout="wide")
+st.set_page_config(page_title="Painel de Produção por Vistoriador - Velox Vistoria", layout="wide")
 st.title("Painel de Produção por Vistoriador - Velox Vistoria")
 
 st.markdown(
@@ -324,8 +325,6 @@ label_map = {_fmt_mes(m): m for m in ym_all}
 # ------------------ FILTROS (layout completo) ------------------
 st.markdown('<div class="section">Filtros</div>', unsafe_allow_html=True)
 
-# Unidades (geral) - lista considerando mês selecionado depois, mas precisamos de um mês inicial para montar lista
-# então: mês como primeiro filtro
 sel_label = st.selectbox("Mês de referência", options=list(label_map.keys()), index=len(ym_all) - 1, key="f_mesref")
 ym_sel = label_map[sel_label]
 
@@ -334,7 +333,6 @@ viewP_mes_full = dfP[dfP["YM"] == ym_sel].copy()
 unids_all = sorted(viewP_mes_full["UNIDADE"].dropna().unique().tolist()) if "UNIDADE" in viewP_mes_full.columns else []
 vists_all = sorted(viewP_mes_full["VISTORIADOR"].dropna().unique().tolist()) if "VISTORIADOR" in viewP_mes_full.columns else []
 
-# ---- Unidades com botões selecionar/limpar ----
 cU1, cU2, cU3 = st.columns([6, 2, 2])
 with cU1:
     f_unids = st.multiselect("Unidades", options=unids_all, default=unids_all, key="f_unids")
@@ -347,7 +345,6 @@ with cU3:
         st.session_state["f_unids"] = []
         st.rerun()
 
-# ---- Período dentro do mês (min/max data do recorte de unidades) ----
 tmp_for_period = viewP_mes_full.copy()
 if "UNIDADE" in tmp_for_period.columns and st.session_state.get("f_unids") is not None:
     if len(st.session_state["f_unids"]) > 0:
@@ -356,44 +353,20 @@ if "UNIDADE" in tmp_for_period.columns and st.session_state.get("f_unids") is no
 dmin = tmp_for_period["__DATA__"].min() if "__DATA__" in tmp_for_period.columns and not tmp_for_period.empty else None
 dmax = tmp_for_period["__DATA__"].max() if "__DATA__" in tmp_for_period.columns and not tmp_for_period.empty else None
 
-start_d = None
-end_d = None
-
 if not isinstance(dmin, date) or not isinstance(dmax, date):
-    st.caption("Período dentro do mês: sem datas suficientes para filtro (verifique coluna DATA).")
+    st.caption("Período dentro do mês: sem datas suficientes para slider (verifique coluna DATA).")
+    start_d = None
+    end_d = None
 else:
-    # 1) Se só existe 1 dia no mês/recorte, não usa slider (evita min==max)
-    if dmin == dmax:
-        st.caption(f"Período dentro do mês: somente {dmin.strftime('%d/%m/%Y')} disponível.")
-        start_d, end_d = dmin, dmax
-        # mantém o session_state coerente
-        st.session_state["f_periodo"] = (start_d, end_d)
-    else:
-        # 2) Se já existe valor salvo, garante que está dentro do novo intervalo
-        cur = st.session_state.get("f_periodo")
-        if isinstance(cur, (tuple, list)) and len(cur) == 2:
-            a, b = cur
-            if isinstance(a, date) and isinstance(b, date):
-                a = max(dmin, min(a, dmax))
-                b = max(dmin, min(b, dmax))
-                if a > b:
-                    a, b = dmin, dmax
-                st.session_state["f_periodo"] = (a, b)
-            else:
-                st.session_state["f_periodo"] = (dmin, dmax)
-        else:
-            st.session_state["f_periodo"] = (dmin, dmax)
+    start_d, end_d = st.slider(
+        "Período dentro do mês",
+        min_value=dmin,
+        max_value=dmax,
+        value=(dmin, dmax),
+        format="DD/MM/YYYY",
+        key="f_periodo"
+    )
 
-        start_d, end_d = st.slider(
-            "Período dentro do mês",
-            min_value=dmin,
-            max_value=dmax,
-            value=st.session_state["f_periodo"],
-            format="DD/MM/YYYY",
-            key="f_periodo",
-        )
-
-# ---- Vistoriadores com botões selecionar/limpar ----
 cV1, cV2, cV3 = st.columns([6, 2, 2])
 with cV1:
     f_vists = st.multiselect("Vistoriadores", options=vists_all, default=[], key="f_vists")
@@ -410,7 +383,6 @@ with cV3:
 # ------------------ APLICA FILTROS ------------------
 viewP_mes = viewP_mes_full.copy()
 
-# unidades
 if "UNIDADE" in viewP_mes.columns:
     sel_u = st.session_state.get("f_unids", unids_all)
     if sel_u is not None and len(sel_u) > 0:
@@ -418,11 +390,9 @@ if "UNIDADE" in viewP_mes.columns:
     elif sel_u is not None and len(sel_u) == 0:
         viewP_mes = viewP_mes.iloc[0:0].copy()
 
-# período
 if isinstance(start_d, date) and isinstance(end_d, date) and "__DATA__" in viewP_mes.columns and not viewP_mes.empty:
     viewP_mes = viewP_mes[(viewP_mes["__DATA__"] >= start_d) & (viewP_mes["__DATA__"] <= end_d)].copy()
 
-# vistoriadores
 sel_v = st.session_state.get("f_vists", [])
 if sel_v and "VISTORIADOR" in viewP_mes.columns:
     viewP_mes = viewP_mes[viewP_mes["VISTORIADOR"].isin([_upper(v) for v in sel_v])].copy()
@@ -458,8 +428,11 @@ base_mes = prod_mes.merge(
 
 base_mes["META_MENSAL"] = pd.to_numeric(base_mes.get("META_MENSAL", 0), errors="coerce").fillna(0).astype(int)
 base_mes["DIAS_UTEIS"] = pd.to_numeric(base_mes.get("DIAS_UTEIS", 0), errors="coerce").fillna(0).astype(int)
-base_mes["FALTANTE"] = (base_mes["META_MENSAL"] - base_mes["liq"]).clip(lower=0).astype(int)
-base_mes["BATEU"] = base_mes["liq"] >= base_mes["META_MENSAL"]
+
+# >>> AJUSTE: BATEU META e FALTANTE agora pelo GERAL (vist), não pelo líquido
+base_mes["FALTANTE"] = (base_mes["META_MENSAL"] - base_mes["vist"]).clip(lower=0).astype(int)
+base_mes["BATEU"] = base_mes["vist"] >= base_mes["META_MENSAL"]
+
 base_mes["TIPO"] = base_mes.get("TIPO", "").fillna("").astype(str).map(_upper)
 
 
@@ -526,7 +499,6 @@ else:
     grp = grp.merge(wd_passados, on="VISTORIADOR", how="left").fillna({"DIAS_PASSADOS": 0})
     grp["DIAS_PASSADOS"] = grp["DIAS_PASSADOS"].astype(int)
 
-    # METAS do mês selecionado
     metas_ref = dfMetas[dfMetas["YM"].astype(str) == ym_sel].copy() if not dfMetas.empty else pd.DataFrame()
 
     if not metas_ref.empty:
@@ -552,7 +524,6 @@ else:
     grp["META_MENSAL"] = pd.to_numeric(grp.get("META_MENSAL", 0), errors="coerce").fillna(0).astype(int)
     grp["DIAS_UTEIS"] = pd.to_numeric(grp.get("DIAS_UTEIS", 0), errors="coerce").fillna(0).astype(int)
 
-    # cálculos
     grp["META_DIA"] = np.where(grp["DIAS_UTEIS"] > 0, grp["META_MENSAL"] / grp["DIAS_UTEIS"], 0.0)
     grp["FALTANTE_MES"] = np.maximum(grp["META_MENSAL"] - grp["LIQUIDO"], 0)
 
@@ -564,7 +535,6 @@ else:
         0.0
     )
 
-    # tendência no BRUTO (VISTORIAS)
     grp["MEDIA_DIA_ATUAL"] = np.where(
         grp["DIAS_PASSADOS"] > 0,
         grp["VISTORIAS"] / grp["DIAS_PASSADOS"],
@@ -573,7 +543,6 @@ else:
     grp["PROJECAO_MES"] = (grp["VISTORIAS"] + grp["MEDIA_DIA_ATUAL"] * grp["DIAS_RESTANTES"]).round(0)
     grp["TENDENCIA_%"] = np.where(grp["META_MENSAL"] > 0, (grp["PROJECAO_MES"] / grp["META_MENSAL"]) * 100, np.nan)
 
-    # normalização tipo + filtro só para tabela
     grp["TIPO_NORM"] = grp.get("TIPO", "").astype(str).str.upper().str.replace("MOVEL", "MÓVEL").str.strip()
     grp.loc[grp["TIPO_NORM"] == "", "TIPO_NORM"] = "—"
 
@@ -589,7 +558,6 @@ else:
     )
     grp_tbl = grp if not sel_tipos else grp[grp["TIPO_NORM"].isin(sel_tipos)]
 
-    # ordenação e formatação
     grp_tbl = grp_tbl.sort_values(["PROJECAO_MES", "LIQUIDO"], ascending=[False, False])
     fmt = grp_tbl.copy()
 
@@ -654,9 +622,11 @@ meses_janela = ym_all[: idx_cur + 1]
 def build_month_maps(dfP_all: pd.DataFrame, dfM_all: pd.DataFrame):
     prod_map = {}
     meta_map = {}
+
     for ym in sorted(dfP_all["YM"].dropna().unique().tolist()):
         p = dfP_all[dfP_all["YM"] == ym].copy()
-        pm = _make_prod(p)[["VISTORIADOR", "UNIDADE", "liq"]].copy() if not p.empty else pd.DataFrame(columns=["VISTORIADOR","UNIDADE","liq"])
+        # >>> AJUSTE: histórico usa GERAL (vist)
+        pm = _make_prod(p)[["VISTORIADOR", "UNIDADE", "vist"]].copy() if not p.empty else pd.DataFrame(columns=["VISTORIADOR","UNIDADE","vist"])
         prod_map[ym] = pm
 
     if dfM_all is None or dfM_all.empty or "YM" not in dfM_all.columns:
@@ -705,20 +675,21 @@ hist = pd.DataFrame({"VISTORIADOR": alvo_names})
 hist["CIDADE"] = hist["VISTORIADOR"].map(city_map).fillna("")
 hist["TIPO"] = hist["VISTORIADOR"].map(tipo_map).fillna("")
 
-def _get_liq_meta(ym: str, vist: str, unid_pref: str = "") -> Tuple[Optional[int], Optional[int]]:
-    pm = prod_map.get(ym, pd.DataFrame(columns=["VISTORIADOR","UNIDADE","liq"]))
+# >>> AJUSTE: pegar GERAL (vist) + meta
+def _get_geral_meta(ym: str, vist: str, unid_pref: str = "") -> Tuple[Optional[int], Optional[int]]:
+    pm = prod_map.get(ym, pd.DataFrame(columns=["VISTORIADOR","UNIDADE","vist"]))
     mm = meta_map.get(ym, pd.DataFrame(columns=["VISTORIADOR","UNIDADE","META_MENSAL","TIPO"]))
 
-    liq = None
+    geral = None
     meta = None
 
     if not pm.empty:
         q = pm[pm["VISTORIADOR"] == vist]
         if unid_pref:
             q2 = q[q["UNIDADE"] == unid_pref]
-            liq = int(q2["liq"].sum()) if not q2.empty else (int(q["liq"].sum()) if not q.empty else None)
+            geral = int(q2["vist"].sum()) if not q2.empty else (int(q["vist"].sum()) if not q.empty else None)
         else:
-            liq = int(q["liq"].sum()) if not q.empty else None
+            geral = int(q["vist"].sum()) if not q.empty else None
 
     if not mm.empty:
         q = mm[mm["VISTORIADOR"] == vist]
@@ -728,20 +699,20 @@ def _get_liq_meta(ym: str, vist: str, unid_pref: str = "") -> Tuple[Optional[int
         else:
             meta = int(q["META_MENSAL"].sum()) if not q.empty else None
 
-    return liq, meta
+    return geral, meta
 
-def _bateu(liq: Optional[int], meta: Optional[int]) -> Optional[bool]:
-    if liq is None or meta is None or meta <= 0:
+def _bateu(geral: Optional[int], meta: Optional[int]) -> Optional[bool]:
+    if geral is None or meta is None or meta <= 0:
         return None
-    return liq >= meta
+    return geral >= meta
 
 streaks = []
 for v in hist["VISTORIADOR"].tolist():
     un = str(hist.loc[hist["VISTORIADOR"] == v, "CIDADE"].iloc[0] or "").strip().upper()
     cons = 0
     for ym in reversed(meses_janela):
-        liq, meta = _get_liq_meta(ym, v, unid_pref=un)
-        b = _bateu(liq, meta)
+        geral, meta = _get_geral_meta(ym, v, unid_pref=un)
+        b = _bateu(geral, meta)
         if b is None:
             break
         if b is False:
@@ -760,35 +731,36 @@ def _sit(cons: int) -> str:
 
 hist["SITUAÇÃO"] = hist["MESES_CONSECUTIVOS_SEM_META"].map(_sit)
 
+# >>> AJUSTE: ordem Meta -> Geral -> Não bateu
 for ym in meses_janela:
     lab = _fmt_mes(ym)
-    col_liq = f"Líquido {lab}"
     col_meta = f"Meta {lab}"
+    col_geral = f"Geral {lab}"
     col_flag = f"Não bateu {lab}"
 
-    liqs, metas, flags = [], [], []
+    metas, gerais, flags = [], [], []
     for v in hist["VISTORIADOR"].tolist():
         un = str(hist.loc[hist["VISTORIADOR"] == v, "CIDADE"].iloc[0] or "").strip().upper()
-        liq, meta = _get_liq_meta(ym, v, unid_pref=un)
+        geral, meta = _get_geral_meta(ym, v, unid_pref=un)
 
-        liqs.append(np.nan if liq is None else liq)
         metas.append(np.nan if meta is None else meta)
+        gerais.append(np.nan if geral is None else geral)
 
-        b = _bateu(liq, meta)
-        flags.append("🔴" if b is False else "—" if b is True else "—")
+        b = _bateu(geral, meta)
+        flags.append("🔴" if b is False else "—")
 
-    hist[col_liq] = liqs
     hist[col_meta] = metas
+    hist[col_geral] = gerais
     hist[col_flag] = flags
 
-num_cols = [c for c in hist.columns if c.startswith("Líquido ") or c.startswith("Meta ")]
+num_cols = [c for c in hist.columns if c.startswith("Meta ") or c.startswith("Geral ")]
 for c in num_cols:
     hist[c] = pd.to_numeric(hist[c], errors="coerce")
     hist[c] = hist[c].map(lambda x: "—" if pd.isna(x) else f"{int(x):,}".replace(",", "."))
 
 lab_cur = _fmt_mes(ym_sel)
-col_liq_cur = f"Líquido {lab_cur}"
 col_meta_cur = f"Meta {lab_cur}"
+col_geral_cur = f"Geral {lab_cur}"
 
 def _to_num(s):
     try:
@@ -796,9 +768,9 @@ def _to_num(s):
     except Exception:
         return np.nan
 
-liq_num = hist[col_liq_cur].map(_to_num).fillna(0).values
+geral_num = hist[col_geral_cur].map(_to_num).fillna(0).values
 meta_num = hist[col_meta_cur].map(_to_num).fillna(0).values
-falt_num = (meta_num - liq_num).clip(min=0)
+falt_num = (meta_num - geral_num).clip(min=0)
 
 order_key = hist["MESES_CONSECUTIVOS_SEM_META"].astype(int).values * 1_000_000 + falt_num
 hist = hist.iloc[np.argsort(-order_key)].reset_index(drop=True)
@@ -806,7 +778,7 @@ hist = hist.iloc[np.argsort(-order_key)].reset_index(drop=True)
 cols_show = ["CIDADE", "VISTORIADOR", "TIPO", "SITUAÇÃO", "MESES_CONSECUTIVOS_SEM_META"]
 for ym in meses_janela:
     lab = _fmt_mes(ym)
-    cols_show += [f"Líquido {lab}", f"Meta {lab}", f"Não bateu {lab}"]
+    cols_show += [f"Meta {lab}", f"Geral {lab}", f"Não bateu {lab}"]
 
 out = hist[cols_show].copy()
 
@@ -820,7 +792,6 @@ st.download_button(
     file_name=f"historico_meta_producao_{ym_sel}.csv",
     mime="text/csv",
 )
-
 
 # =========================
 # Evolução diária
@@ -886,7 +857,6 @@ st.markdown("<div class='section-title'>Chassis com múltiplas vistorias</div>",
 if view.empty:
     st.caption("Nenhum chassi com múltiplas vistorias dentro dos filtros.")
 else:
-    # Descobre qual coluna é o CHASSI dentro do dataframe "view"
     col_chas_view = _find_col(list(view.columns), "CHASSI")
 
     if not col_chas_view:
@@ -956,22 +926,22 @@ else:
         else pd.DataFrame(columns=["VISTORIADOR","TIPO","META_MENSAL"])
     )
 
-    base_mes = prod_mes.merge(metas_join, on="VISTORIADOR", how="left")
-    base_mes["TIPO"] = (
-    base_mes["TIPO"]
-    .fillna("")
-    .astype(str)
-    .map(_upper)                # já existe no seu código
-    .replace({"MOVEL": "MÓVEL"})
-    .replace("", "—")
-)
-    base_mes["META_MENSAL"] = pd.to_numeric(base_mes["META_MENSAL"], errors="coerce").fillna(0)
-    base_mes["ATING_%"] = np.where(base_mes["META_MENSAL"]>0, (base_mes["VISTORIAS"]/base_mes["META_MENSAL"])*100, np.nan)
+    base_mes2 = prod_mes.merge(metas_join, on="VISTORIADOR", how="left")
+    base_mes2["TIPO"] = (
+        base_mes2["TIPO"]
+        .fillna("")
+        .astype(str)
+        .map(_upper)
+        .replace({"MOVEL": "MÓVEL"})
+        .replace("", "—")
+    )
+    base_mes2["META_MENSAL"] = pd.to_numeric(base_mes2["META_MENSAL"], errors="coerce").fillna(0)
+    base_mes2["ATING_%"] = np.where(base_mes2["META_MENSAL"]>0, (base_mes2["VISTORIAS"]/base_mes2["META_MENSAL"])*100, np.nan)
 
-    meta_tot = int(base_mes["META_MENSAL"].sum())
-    vist_tot = int(base_mes["VISTORIAS"].sum())
-    rev_tot  = int(base_mes["REVISTORIAS"].sum())
-    liq_tot  = int(base_mes["LIQUIDO"].sum())
+    meta_tot = int(base_mes2["META_MENSAL"].sum())
+    vist_tot = int(base_mes2["VISTORIAS"].sum())
+    rev_tot  = int(base_mes2["REVISTORIAS"].sum())
+    liq_tot  = int(base_mes2["LIQUIDO"].sum())
     ating_g  = (vist_tot / meta_tot * 100) if meta_tot > 0 else np.nan
 
     def chip_pct(p):
@@ -1055,10 +1025,10 @@ else:
             st.dataframe(bot_fmt, use_container_width=True, hide_index=True)
 
     st.markdown("#### FIXO")
-    render_ranking(base_mes[base_mes["TIPO"] == "FIXO"], "vistoriadores FIXO")
+    render_ranking(base_mes2[base_mes2["TIPO"] == "FIXO"], "vistoriadores FIXO")
 
     st.markdown("#### MÓVEL")
-    render_ranking(base_mes[base_mes["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
+    render_ranking(base_mes2[base_mes2["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
 
 
 # =========================
@@ -1170,6 +1140,3 @@ else:
 
     st.markdown("#### MÓVEL")
     render_ranking_dia(base_dia[base_dia["TIPO"].isin(["MÓVEL","MOVEL"])], "vistoriadores MÓVEL")
-
-
-
