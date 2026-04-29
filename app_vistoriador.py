@@ -7,6 +7,7 @@
 # 2) Voltar filtros completos: Unidades + (botões selecionar/limpar), Mês, Período dentro do mês, Vistoriadores + (botões)
 # 3) Tendência/Projeção no RESUMO calculadas em cima do TOTAL BRUTO (VISTORIAS), como solicitado
 # 4) HISTÓRICO DE META: comparar META x GERAL (VISTORIAS) e mostrar Meta antes do Realizado (Geral)
+# 5) RESUMO POR VISTORIADOR: FALTANTE_MES e NECESSIDADE_DIA calculados sobre VISTORIAS GERAIS
 # ============================================================
 
 import os
@@ -525,7 +526,8 @@ else:
     grp["DIAS_UTEIS"] = pd.to_numeric(grp.get("DIAS_UTEIS", 0), errors="coerce").fillna(0).astype(int)
 
     grp["META_DIA"] = np.where(grp["DIAS_UTEIS"] > 0, grp["META_MENSAL"] / grp["DIAS_UTEIS"], 0.0)
-    grp["FALTANTE_MES"] = np.maximum(grp["META_MENSAL"] - grp["LIQUIDO"], 0)
+    # Meta/faltante calculado sobre VISTORIAS GERAIS, não sobre líquido
+    grp["FALTANTE_MES"] = np.maximum(grp["META_MENSAL"] - grp["VISTORIAS"], 0)
 
     grp["DIAS_RESTANTES"] = np.maximum(grp["DIAS_UTEIS"] - grp["DIAS_PASSADOS"], 0)
 
