@@ -7,14 +7,16 @@
 # 2) Voltar filtros completos: Unidades + (botões selecionar/limpar), Mês, Período dentro do mês, Vistoriadores + (botões)
 # 3) Tendência/Projeção no RESUMO calculadas em cima do TOTAL BRUTO (VISTORIAS), como solicitado
 # 4) HISTÓRICO DE META: comparar META x GERAL (VISTORIAS) e mostrar Meta antes do Realizado (Geral)
-# 5) RESUMO POR VISTORIADOR: FALTANTE_MES e NECESSIDADE_DIA calculados sobre VISTORIAS GERAIS
+# 5) CORREÇÃO: DIAS_PASSADOS no RESUMO passa a ser por CALENDÁRIO (dias úteis decorridos até a data de referência),
+#    e não "dias com registro" do vistoriador. (Faltas contam contra, como deve ser.)
+#    Também alinhado FALTANTE_MES ao BRUTO (VISTORIAS), para coerência com tendência/projeção no bruto.
 # ============================================================
 
 import os
 import re
 import json
 import unicodedata
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional, Tuple, Dict, List
 
 import streamlit as st
@@ -27,8 +29,8 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 
 # ------------------ CONFIG BÁSICA ------------------
-st.set_page_config(page_title="Painel de Produção por Vistoriador - Velox Vistoria", layout="wide")
-st.title("Painel de Produção por Vistoriador - Velox Vistoria")
+st.set_page_config(page_title="Painel de Produção por Vistoriador - VELOX Vistoria", layout="wide")
+st.title("Painel de Produção por Vistoriador - VELOX Vistoria")
 
 st.markdown(
     """
@@ -166,6 +168,19 @@ def _is_workday(d):
 
 def _nt(x):
     return x
+
+def _workdays_elapsed_in_month(ref: Optional[date]) -> int:
+    """Dias úteis decorridos no mês até ref (inclusive), contando 2ª–6ª."""
+    if not isinstance(ref, date):
+        return 0
+    start = date(ref.year, ref.month, 1)
+    cur = start
+    n = 0
+    while cur <= ref:
+        if cur.weekday() < 5:
+            n += 1
+        cur += timedelta(days=1)
+    return int(n)
 
 
 # ------------------ LEITURA DO ÍNDICE ------------------
@@ -460,7 +475,7 @@ st.markdown(
 )
 
 
-# ------------------ RESUMO (mês selecionado) — MODELO ANTIGO (tendência no BRUTO) ------------------
+# ------------------ RESUMO (mês selecionado) — tendência no BRUTO ------------------
 st.markdown('<div class="section">Resumo por Vistoriador</div>', unsafe_allow_html=True)
 
 view = viewP_mes.copy()
@@ -481,24 +496,11 @@ else:
 
     grp["LIQUIDO"] = grp["VISTORIAS"] - grp["REVISTORIAS"]
 
-    def _calc_wd_passados(df_view: pd.DataFrame) -> pd.DataFrame:
-        if df_view.empty or "__DATA__" not in df_view.columns or "VISTORIADOR" not in df_view.columns:
-            return pd.DataFrame(columns=["VISTORIADOR", "DIAS_PASSADOS"])
-        mask = df_view["__DATA__"].apply(_is_workday)
-        if not mask.any():
-            vists = df_view["VISTORIADOR"].dropna().unique()
-            return pd.DataFrame({"VISTORIADOR": vists, "DIAS_PASSADOS": np.zeros(len(vists), dtype=int)})
-        out = (df_view.loc[mask]
-               .groupby("VISTORIADOR")["__DATA__"]
-               .nunique()
-               .reset_index()
-               .rename(columns={"__DATA__": "DIAS_PASSADOS"}))
-        out["DIAS_PASSADOS"] = out["DIAS_PASSADOS"].astype(int)
-        return out
-
-    wd_passados = _calc_wd_passados(view)
-    grp = grp.merge(wd_passados, on="VISTORIADOR", how="left").fillna({"DIAS_PASSADOS": 0})
-    grp["DIAS_PASSADOS"] = grp["DIAS_PASSADOS"].astype(int)
+    # >>> CORREÇÃO: DIAS_PASSADOS por CALENDÁRIO (dias úteis decorridos até a data de referência)
+    datas_ok = [d for d in view["__DATA__"] if isinstance(d, date)]
+    ref_date = end_d if isinstance(end_d, date) else (max(datas_ok) if datas_ok else None)
+    dias_passados_cal = _workdays_elapsed_in_month(ref_date) if ref_date else 0
+    grp["DIAS_PASSADOS"] = int(dias_passados_cal)
 
     metas_ref = dfMetas[dfMetas["YM"].astype(str) == ym_sel].copy() if not dfMetas.empty else pd.DataFrame()
 
@@ -526,7 +528,8 @@ else:
     grp["DIAS_UTEIS"] = pd.to_numeric(grp.get("DIAS_UTEIS", 0), errors="coerce").fillna(0).astype(int)
 
     grp["META_DIA"] = np.where(grp["DIAS_UTEIS"] > 0, grp["META_MENSAL"] / grp["DIAS_UTEIS"], 0.0)
-    # Meta/faltante calculado sobre VISTORIAS GERAIS, não sobre líquido
+
+    # >>> CORREÇÃO: FALTANTE_MES coerente com tendência/projeção no BRUTO (VISTORIAS)
     grp["FALTANTE_MES"] = np.maximum(grp["META_MENSAL"] - grp["VISTORIAS"], 0)
 
     grp["DIAS_RESTANTES"] = np.maximum(grp["DIAS_UTEIS"] - grp["DIAS_PASSADOS"], 0)
