@@ -440,17 +440,27 @@ def read_tempo_vistoria_month(sheet_id: str, ym: Optional[str] = None) -> Tuple[
         if need not in df.columns:
             df[need] = ""
 
-    if df["DATA_ABERTURA_MESA"].astype(str).str.strip().ne("").any():
-        df["DATA_BASE"] = df["DATA_ABERTURA_MESA"].apply(parse_date_any)
-    else:
-        df["DATA_BASE"] = df["DATA_HORA_V6"].apply(parse_date_any)
+    # Fallback linha a linha: tenta DATA_ABERTURA_MESA; se vier vazia/inválida, usa DATA_HORA_V6.
+    data_abertura = df["DATA_ABERTURA_MESA"].apply(parse_date_any)
+    data_v6 = df["DATA_HORA_V6"].apply(parse_date_any)
+
+    df["DATA_BASE"] = data_abertura
+    mask_faltante = pd.isna(df["DATA_BASE"])
+    df.loc[mask_faltante, "DATA_BASE"] = data_v6[mask_faltante]
 
     df["OS"] = df["OS"].astype(str).str.strip()
     df["PLACA"] = df["PLACA"].astype(str).str.strip()
     df["TIPO_USUARIO"] = df["TIPO_USUARIO"].astype(str).map(_upper)
     df["USUARIO"] = df["USUARIO"].astype(str).map(_upper)
     df["TEMPO_SEG"] = df["TEMPO_TOTAL"].apply(parse_time_seconds)
-    df["YM"] = ym or ""
+
+    # Se o índice tiver MÊS em formato reconhecido, usa esse mês.
+    # Caso contrário, deriva o mês pela própria DATA_BASE da linha.
+    if ym:
+        df["YM"] = ym
+    else:
+        df["YM"] = pd.to_datetime(df["DATA_BASE"], errors="coerce").dt.to_period("M").astype(str)
+        df.loc[df["YM"].eq("NaT"), "YM"] = ""
 
     # Para a nova visão, só precisamos da etapa do vistoriador e de tempos válidos.
     df = df[
@@ -522,13 +532,15 @@ if ANALISTAS_INDEX_ID:
     try:
         idx_tempo = read_analistas_index(ANALISTAS_INDEX_ID, tab="PRODUÇÃO")
         idx_tempo = idx_tempo[idx_tempo["ATIVO"].map(_yes)].copy()
+
+        # Não descarta linhas quando a coluna MÊS estiver em formato diferente.
+        # Se o MÊS for reconhecido, usamos; se não, o mês será calculado pela DATA_BASE da própria planilha.
         idx_tempo["YM"] = idx_tempo["MÊS"].map(_ym_token)
-        idx_tempo = idx_tempo[idx_tempo["YM"].notna()].copy()
 
         with st.spinner(f"Lendo tempo de vistoria em {len(idx_tempo)} planilha(s) do painel dos analistas..."):
             for _, r in idx_tempo.iterrows():
                 sid = _sheet_id(r["URL"])
-                ym = r["YM"]
+                ym = r["YM"] if pd.notna(r.get("YM", None)) else None
                 if not sid:
                     continue
                 try:
